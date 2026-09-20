@@ -230,6 +230,11 @@ async function prepareWorkspace(jobDir, tarFile, baseSha) {
 
   let r = run("git", ["init"], { cwd: jobDir });
   if (r.code) throw new Error(r.out);
+  await fsp.writeFile(
+    path.join(jobDir, ".git", "info", "exclude"),
+    ".diana-base-sha\n.last-used\n.codex-last.log\n.luna-result.json\n.luna-audit.json\n",
+    { encoding: "utf8" }
+  );
   run("git", ["config", "user.name", "Diana Luna Bridge"], { cwd: jobDir });
   run("git", ["config", "user.email", "bridge@invalid.local"], { cwd: jobDir });
   r = run("git", ["add", "-A"], { cwd: jobDir });
