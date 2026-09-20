@@ -295,6 +295,7 @@ async function executeTask(broker, cycleArg, taskArg) {
       "-m", "gpt-5.6-luna",
       "-c", "model_reasoning_effort=max",
       "-c", "agents.enabled=false",
+      "-c", "features.use_legacy_landlock=true",
       "-c", "sandbox_workspace_write.network_access=false",
       prompt,
     ];
