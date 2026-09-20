@@ -20,13 +20,31 @@ const MAX_META = 128 * 1024;
 const MAX_PATCH = 8 * 1024 * 1024;
 const MAX_RESULT = 2 * 1024 * 1024;
 const MAX_LOG_TAIL = 12000;
-const MAX_CONCURRENT = 5;
+const MAX_CONCURRENT = 2;
+const MAX_QUEUE = 8;
 const MAX_TIMEOUT = 26 * 60;
 const MIN_TIMEOUT = 30;
 const ALLOWED_RESULTS = new Set([".luna-result.json", ".luna-audit.json"]);
 const seenJti = new Map();
 let active = 0;
+const waiters = [];
 let jwksCache = { at: 0, keys: [] };
+
+async function acquireSlot() {
+  if (active < MAX_CONCURRENT) {
+    active++;
+    return;
+  }
+  if (waiters.length >= MAX_QUEUE) throw new Error("Luna queue full");
+  await new Promise((resolve) => waiters.push(resolve));
+  active++;
+}
+
+function releaseSlot() {
+  active = Math.max(0, active - 1);
+  const next = waiters.shift();
+  if (next) next();
+}
 
 function json(res, status, obj) {
   const body = Buffer.from(JSON.stringify(obj));
@@ -412,17 +430,22 @@ async function health() {
     storage: mount.code === 0,
     codex_auth: auth.code === 0,
     active,
+    queued: waiters.length,
+    max_concurrent: MAX_CONCURRENT,
   };
 }
 
 async function handleRun(req, res) {
-  if (active >= MAX_CONCURRENT) return json(res, 429, { ok: false, error: "busy" });
   const authz = String(req.headers.authorization || "");
   if (!authz.startsWith("Bearer ")) return json(res, 401, { ok: false, error: "missing bearer" });
   try { await verifyOidc(authz.slice(7)); }
   catch (e) { return json(res, 403, { ok: false, error: String(e.message || e) }); }
 
-  active++;
+  try {
+    await acquireSlot();
+  } catch (e) {
+    return json(res, 429, { ok: false, error: String(e.message || e) });
+  }
   const requestFile = path.join(os.tmpdir(), "diana-" + crypto.randomUUID() + ".bin");
   let tarFile = "";
   try {
@@ -449,7 +472,7 @@ async function handleRun(req, res) {
   } catch (e) {
     return json(res, 500, { ok: false, error: String(e.message || e).slice(0, 2000) });
   } finally {
-    active--;
+    releaseSlot();
     await fsp.rm(requestFile, { force: true }).catch(() => {});
     if (tarFile) await fsp.rm(tarFile, { force: true }).catch(() => {});
   }
