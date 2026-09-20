@@ -85,3 +85,63 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           unset OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN || true
           node scripts/luna_public_fabric.mjs run "$LUNA_AUTH_BROKER" "${{ needs.plan.outputs.cycle_id }}" "${{ matrix.task }}"
+
+  sandbox_probe:
+    name: Codex Linux sandbox probe
+    if: github.event_name == 'push' && contains(github.event.head_commit.message, 'sandbox probe')
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      LUNA_AUTH_BROKER: https://luna-engine-production.up.railway.app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Inspect Linux sandbox prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "bwrap=$(command -v bwrap || true)"
+          sysctl kernel.unprivileged_userns_clone 2>/dev/null || true
+          sysctl user.max_user_namespaces 2>/dev/null || true
+
+      - name: Install Codex and lease ChatGPT auth
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          echo "CODEX_HOME=$RUNNER_TEMP/codex-home" >> "$GITHUB_ENV"
+          node scripts/luna_hosted_auth.mjs lease "$LUNA_AUTH_BROKER" "$RUNNER_TEMP/codex-home"
+
+      - name: Probe raw Codex Linux sandbox
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          mkdir -p "$RUNNER_TEMP/sandbox-probe"
+          cd "$RUNNER_TEMP/sandbox-probe"
+          codex sandbox linux -- bash -lc 'printf "RAW_SANDBOX_OK\n" > raw.txt'
+          cat raw.txt
+
+      - name: Probe Luna workspace-write tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          unset OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN || true
+          cd "$RUNNER_TEMP/sandbox-probe"
+          codex exec --skip-git-repo-check --ephemeral --ignore-user-config --sandbox workspace-write --color never -m gpt-5.6-luna -c model_reasoning_effort=max -c agents.enabled=false "Use your local command or patch tools to create probe.txt containing exactly LUNA_WORKSPACE_WRITE_OK followed by a newline. Then verify the file exists and reply exactly DONE."
+          test "$(cat probe.txt)" = "LUNA_WORKSPACE_WRITE_OK"
+
+      - name: Persist auth and clean
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f "$CODEX_HOME/auth.json" ] && [ -f "$CODEX_HOME/.lease.json" ]; then
+            node scripts/luna_hosted_auth.mjs commit "$LUNA_AUTH_BROKER" "$CODEX_HOME"
+          fi
+          rm -rf "$CODEX_HOME" "$RUNNER_TEMP/sandbox-probe"
