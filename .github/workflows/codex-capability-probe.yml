@@ -1,0 +1,125 @@
+name: ChatGPT Codex capability probe
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  codex-cli:
+    name: Codex CLI and auth probe
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Runner facts
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "os=$(uname -a)"
+          echo "node=$(node --version)"
+          echo "npm=$(npm --version)"
+          echo "runner=$RUNNER_NAME"
+          echo "event=$GITHUB_EVENT_NAME"
+
+      - name: Install official Codex CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          command -v codex
+          codex --version
+
+      - name: Probe authentication without exposing credentials
+        shell: bash
+        run: |
+          set +e
+          export PATH="$HOME/.local/bin:$PATH"
+
+          echo "=== credential environment presence (values are NEVER printed) ==="
+          for name in OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN; do
+            if [ -n "${!name:-}" ]; then
+              echo "$name=present"
+            else
+              echo "$name=absent"
+            fi
+          done
+
+          if [ -f "$HOME/.codex/auth.json" ]; then
+            echo "codex_auth_file=present"
+          else
+            echo "codex_auth_file=absent"
+          fi
+
+          echo "=== codex login status ==="
+          codex login status
+          LOGIN_STATUS=$?
+          echo "login_status_exit=$LOGIN_STATUS"
+
+          echo "=== Luna MAX non-interactive inference probe ==="
+          timeout 90s codex exec --ephemeral --sandbox read-only -m gpt-5.6-luna -c model_reasoning_effort=max "Reply with exactly CODEX_PROBE_OK and nothing else."
+          EXEC_STATUS=$?
+          echo "codex_exec_exit=$EXEC_STATUS"
+
+          {
+            echo "## Codex capability probe"
+            echo "- login status exit: $LOGIN_STATUS"
+            echo "- Luna Max exec exit: $EXEC_STATUS"
+            echo "- No credential values were printed."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit 0
+
+  github-write:
+    name: GITHUB_TOKEN write probe
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Create and push an isolated probe branch
+        shell: bash
+        run: |
+          set +e
+          BRANCH="gha/probe-$GITHUB_RUN_ID"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          mkdir -p probe-results
+          printf 'run_id=%s\nsha=%s\ntime=%s\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > "probe-results/$GITHUB_RUN_ID.txt"
+          git add "probe-results/$GITHUB_RUN_ID.txt"
+          git commit -m "test: GitHub Actions write capability probe"
+          git push origin "$BRANCH"
+          STATUS=$?
+          echo "push_exit=$STATUS"
+          {
+            echo "## GitHub write probe"
+            echo "- branch: `$BRANCH`"
+            echo "- push exit: $STATUS"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+  parallel-workers:
+    name: Parallel worker ${{ matrix.worker }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: [1, 2, 3, 4]
+    permissions:
+      contents: read
+    steps:
+      - name: Prove four-way runner parallelism
+        shell: bash
+        run: |
+          echo "worker=${{ matrix.worker }} start=$(date -u +%FT%TZ)"
+          sleep 10
+          echo "worker=${{ matrix.worker }} end=$(date -u +%FT%TZ)"
