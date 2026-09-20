@@ -119,15 +119,11 @@ jobs:
           echo "CODEX_HOME=$RUNNER_TEMP/codex-home" >> "$GITHUB_ENV"
           node scripts/luna_hosted_auth.mjs lease "$LUNA_AUTH_BROKER" "$RUNNER_TEMP/codex-home"
 
-      - name: Probe raw Codex Linux sandbox
+      - name: Prepare synthetic workspace
         shell: bash
         run: |
           set -euo pipefail
-          export PATH="$HOME/.local/bin:$PATH"
           mkdir -p "$RUNNER_TEMP/sandbox-probe"
-          cd "$RUNNER_TEMP/sandbox-probe"
-          codex --enable use_legacy_landlock sandbox linux bash -lc 'printf "RAW_SANDBOX_OK\n" > raw.txt'
-          cat raw.txt
 
       - name: Probe Luna workspace-write tools
         shell: bash
