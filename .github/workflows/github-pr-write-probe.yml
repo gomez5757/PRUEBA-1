@@ -1,0 +1,37 @@
+name: GitHub PR write capability probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/github-pr-write-probe.yml"
+  workflow_dispatch:
+
+jobs:
+  pr-write:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Push branch and open draft PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRANCH="gha/pr-probe-$GITHUB_RUN_ID"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          mkdir -p pr-probe-results
+          printf 'run_id=%s\ncreated=%s\n' "$GITHUB_RUN_ID" "$(date -u +%FT%TZ)" > "pr-probe-results/$GITHUB_RUN_ID.txt"
+          git add "pr-probe-results/$GITHUB_RUN_ID.txt"
+          git commit -m "test: PR write capability probe"
+          git push origin "$BRANCH"
+          gh pr create --draft --base main --head "$BRANCH" --title "TEST: GitHub Actions PR write probe $GITHUB_RUN_ID" --body "Automated isolated capability probe. Safe to close."
