@@ -10,12 +10,12 @@ const CODEX_HOME = process.env.CODEX_HOME || "/root/.codex";
 const AUTH_PATH = path.join(CODEX_HOME, "auth.json");
 const EXPECTED_ISS = "https://token.actions.githubusercontent.com";
 const EXPECTED_AUD = process.env.DIANA_OIDC_AUDIENCE || "diana-luna-auth-v1";
-const EXPECTED_REPO = process.env.DIANA_REPOSITORY || "gomez5757/diana-plus";
-const EXPECTED_REPO_ID = String(process.env.DIANA_REPOSITORY_ID || "1322643727");
+const EXPECTED_REPO = process.env.DIANA_REPOSITORY || "gomez5757/PRUEBA-1";
+const EXPECTED_REPO_ID = String(process.env.DIANA_REPOSITORY_ID || "1203071224");
 const ALLOWED_REFS = new Set((process.env.DIANA_ALLOWED_REFS ||
-  "refs/heads/chatgpt-auto/luna-integration,refs/heads/chatgpt-auto/luna-hosted-migration-20260920").split(",").filter(Boolean));
+  "refs/heads/main").split(",").filter(Boolean));
 const ALLOWED_WORKFLOW = process.env.DIANA_ALLOWED_WORKFLOW ||
-  `${EXPECTED_REPO}/.github/workflows/luna-hosted.yml@`;
+  `${EXPECTED_REPO}/.github/workflows/luna-public-worker.yml@`;
 const MAX_BODY = 256 * 1024;
 const MAX_AUTH = 128 * 1024;
 const seenJti = new Map();
