@@ -232,7 +232,7 @@ async function prepareWorkspace(jobDir, tarFile, baseSha) {
   if (r.code) throw new Error(r.out);
   await fsp.writeFile(
     path.join(jobDir, ".git", "info", "exclude"),
-    ".diana-base-sha\n.last-used\n.codex-last.log\n.luna-result.json\n.luna-audit.json\n",
+    ".diana-base-sha\n.last-used\n.codex-last.log\n.codex-output-schema.json\n.codex-final-message.json\n.luna-result.json\n.luna-audit.json\n",
     { encoding: "utf8" }
   );
   run("git", ["config", "user.name", "Diana Luna Bridge"], { cwd: jobDir });
@@ -268,7 +268,64 @@ async function cleanupJobs() {
   }
 }
 
-async function runCodex(jobDir, prompt, timeout, logFile) {
+function outputSchema(resultFile) {
+  if (resultFile === ".luna-audit.json") {
+    return {
+      type: "object",
+      properties: {
+        schema: { type: "integer" },
+        smoke: { type: "string" },
+        findings: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              title: { type: "string" },
+              priority: { type: "string", enum: ["P1", "P2", "P3"] },
+              why: { type: "string" },
+              evidence: { type: "string" },
+              acceptance: { type: "string" },
+              paths: { type: "array", items: { type: "string" } },
+              conflict_keys: { type: "array", items: { type: "string" } }
+            },
+            required: ["title","priority","why","evidence","acceptance","paths","conflict_keys"],
+            additionalProperties: false
+          }
+        }
+      },
+      required: ["schema","smoke","findings"],
+      additionalProperties: false
+    };
+  }
+  return {
+    type: "object",
+    properties: {
+      schema: { type: "integer" },
+      task_id: { type: "string" },
+      worker: { type: "string" },
+      status: { type: "string", enum: ["READY_FOR_INTEGRATION","CONTINUE","BLOCKED","NOOP"] },
+      summary: { type: "string" },
+      tests: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            command: { type: "string" },
+            exit_code: { type: "integer" }
+          },
+          required: ["command","exit_code"],
+          additionalProperties: false
+        }
+      },
+      files: { type: "array", items: { type: "string" } },
+      notes: { type: "string" }
+    },
+    required: ["schema","task_id","worker","status","summary","tests","files","notes"],
+    additionalProperties: false
+  };
+}
+
+async function runCodex(jobDir, prompt, timeout, logFile, resultFile) {
   const env = {
     PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
     HOME: "/root",
@@ -277,8 +334,14 @@ async function runCodex(jobDir, prompt, timeout, logFile) {
     LC_ALL: "C.UTF-8",
     CI: "1",
   };
+  const schemaFile = path.join(jobDir, ".codex-output-schema.json");
+  const finalFile = path.join(jobDir, ".codex-final-message.json");
+  await fsp.writeFile(schemaFile, JSON.stringify(outputSchema(resultFile)), { mode: 0o600 });
+  await fsp.rm(finalFile, { force: true });
   const args = [
-    "exec", "--skip-git-repo-check", "--ephemeral", "--sandbox", "workspace-write",
+    "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config",
+    "--sandbox", "workspace-write", "--color", "never",
+    "--output-schema", schemaFile, "--output-last-message", finalFile,
     "-m", "gpt-5.6-luna", "-c", "model_reasoning_effort=max", prompt,
   ];
   const out = fs.createWriteStream(logFile, { flags: "w", mode: 0o600 });
@@ -300,13 +363,19 @@ async function runCodex(jobDir, prompt, timeout, logFile) {
 
 async function collectResult(jobDir, resultFile, logFile) {
   const rp = path.join(jobDir, resultFile);
+  const finalMessage = path.join(jobDir, ".codex-final-message.json");
   let result = null;
-  try {
-    const st = await fsp.stat(rp);
-    if (st.size > MAX_RESULT) throw new Error("result file too large");
-    result = JSON.parse(await fsp.readFile(rp, "utf8"));
-  } catch {}
+  for (const candidate of [rp, finalMessage]) {
+    try {
+      const st = await fsp.stat(candidate);
+      if (st.size > MAX_RESULT) throw new Error("result file too large");
+      result = JSON.parse(await fsp.readFile(candidate, "utf8"));
+      if (result && typeof result === "object") break;
+    } catch {}
+  }
   await fsp.rm(rp, { force: true });
+  await fsp.rm(finalMessage, { force: true });
+  await fsp.rm(path.join(jobDir, ".codex-output-schema.json"), { force: true });
   const other = resultFile === ".luna-result.json" ? ".luna-audit.json" : ".luna-result.json";
   await fsp.rm(path.join(jobDir, other), { force: true });
 
@@ -366,7 +435,7 @@ async function handleRun(req, res) {
     const jobDir = path.join(JOB_ROOT, meta.jobId);
     const prepared = await prepareWorkspace(jobDir, tarFile, meta.baseSha);
     const logFile = path.join(jobDir, ".codex-last.log");
-    const exec = await runCodex(jobDir, meta.prompt, meta.timeout, logFile);
+    const exec = await runCodex(jobDir, meta.prompt, meta.timeout, logFile, meta.resultFile);
     const collected = await collectResult(jobDir, meta.resultFile, logFile);
     return json(res, 200, {
       ok: true,
