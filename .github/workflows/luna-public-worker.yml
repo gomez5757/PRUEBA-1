@@ -79,6 +79,24 @@ jobs:
           test -f /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
           sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/bwrap-userns-restrict
           sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+          cat > "$RUNNER_TEMP/luna-requirements.toml" <<'EOF'
+          allowed_sandbox_modes = ["workspace-write"]
+          allowed_web_search_modes = []
+          allow_managed_hooks_only = true
+          allow_browser_and_computer_use = false
+          allow_appshots = false
+          allow_remote_control = false
+          allow_login_shell = false
+          mcp_servers = {}
+
+          [features]
+          apps = false
+          browser_use = false
+          browser_use_external = false
+          computer_use = false
+          EOF
+          sudo install -d -m 0755 /etc/codex
+          sudo install -m 0644 "$RUNNER_TEMP/luna-requirements.toml" /etc/codex/requirements.toml
           command -v bwrap >/dev/null
 
       - name: Install isolated Codex CLI
@@ -120,6 +138,24 @@ jobs:
           test -f /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
           sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/bwrap-userns-restrict
           sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+          cat > "$RUNNER_TEMP/luna-requirements.toml" <<'EOF'
+          allowed_sandbox_modes = ["workspace-write"]
+          allowed_web_search_modes = []
+          allow_managed_hooks_only = true
+          allow_browser_and_computer_use = false
+          allow_appshots = false
+          allow_remote_control = false
+          allow_login_shell = false
+          mcp_servers = {}
+
+          [features]
+          apps = false
+          browser_use = false
+          browser_use_external = false
+          computer_use = false
+          EOF
+          sudo install -d -m 0755 /etc/codex
+          sudo install -m 0644 "$RUNNER_TEMP/luna-requirements.toml" /etc/codex/requirements.toml
           command -v bwrap
           bwrap --version
           sysctl kernel.unprivileged_userns_clone 2>/dev/null || true
