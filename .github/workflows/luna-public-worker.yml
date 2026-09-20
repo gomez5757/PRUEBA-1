@@ -69,6 +69,18 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Prepare hardened Codex Linux sandbox
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap apparmor-profiles apparmor-utils
+          test -f /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+          sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/bwrap-userns-restrict
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+          command -v bwrap >/dev/null
+
       - name: Install isolated Codex CLI
         shell: bash
         run: |
@@ -102,8 +114,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
           sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap
+          sudo apt-get install -y -qq bubblewrap apparmor-profiles apparmor-utils
+          test -f /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
+          sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/bwrap-userns-restrict
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
           command -v bwrap
           bwrap --version
           sysctl kernel.unprivileged_userns_clone 2>/dev/null || true
@@ -132,7 +148,7 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           unset OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN || true
           cd "$RUNNER_TEMP/sandbox-probe"
-          codex --enable use_legacy_landlock exec --skip-git-repo-check --ephemeral --ignore-user-config --sandbox workspace-write --color never -m gpt-5.6-luna -c model_reasoning_effort=max -c approval_policy=never -c agents.enabled=false -c sandbox_workspace_write.network_access=false "Use your local command or patch tools to create probe.txt containing exactly LUNA_WORKSPACE_WRITE_OK followed by a newline. Then verify the file exists and reply exactly DONE."
+          codex exec --skip-git-repo-check --ephemeral --ignore-user-config --sandbox workspace-write --color never -m gpt-5.6-luna -c model_reasoning_effort=max -c approval_policy=never -c agents.enabled=false -c sandbox_workspace_write.network_access=false "Use your local command or patch tools to create probe.txt containing exactly LUNA_WORKSPACE_WRITE_OK followed by a newline. Then verify the file exists and reply exactly DONE."
           test "$(cat probe.txt)" = "LUNA_WORKSPACE_WRITE_OK"
 
       - name: Persist auth and clean
