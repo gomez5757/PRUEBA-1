@@ -1,27 +1,66 @@
 name: Luna Public Worker
 
 on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
   push:
     branches: [main]
     paths:
       - .github/workflows/luna-public-worker.yml
-      - scripts/luna_hosted_auth.mjs
-      - .luna-public-smoke
-  workflow_dispatch: {}
+      - scripts/luna_public_fabric.mjs
 
 permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: luna-public-fabric-${{ github.run_id }}
+  cancel-in-progress: false
+
 jobs:
-  smoke:
-    name: Luna Max public smoke ${{ matrix.worker }}
+  plan:
+    name: Claim one private Diana cycle
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 5
+    outputs:
+      has_work: ${{ steps.plan.outputs.has_work }}
+      cycle_id: ${{ steps.plan.outputs.cycle_id }}
+      tasks: ${{ steps.plan.outputs.tasks }}
+    env:
+      LUNA_AUTH_BROKER: https://luna-engine-production.up.railway.app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: plan
+        name: Claim pending work without exposing prompts
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLAIM="$RUNNER_TEMP/claim.json"
+          node scripts/luna_public_fabric.mjs claim "$LUNA_AUTH_BROKER" > "$CLAIM"
+          node - "$CLAIM" "$GITHUB_OUTPUT" <<'NODE'
+          const fs=require("fs");
+          const [file,out]=process.argv.slice(2);
+          const d=JSON.parse(fs.readFileSync(file,"utf8"));
+          fs.appendFileSync(out, "has_work="+(d.has_work?"true":"false")+"\n");
+          fs.appendFileSync(out, "cycle_id="+(d.cycle_id||"")+"\n");
+          fs.appendFileSync(out, "tasks="+JSON.stringify(d.task_ids||[])+"\n");
+          NODE
+          rm -f "$CLAIM"
+
+  worker:
+    name: Luna Max / ${{ matrix.task }}
+    needs: plan
+    if: needs.plan.outputs.has_work == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
+      max-parallel: 20
       matrix:
-        worker: [1, 2, 3, 4, 5]
+        task: ${{ fromJSON(needs.plan.outputs.tasks) }}
     env:
       LUNA_AUTH_BROKER: https://luna-engine-production.up.railway.app
     steps:
@@ -29,73 +68,19 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Prepare isolated Codex runtime
+      - name: Install isolated Codex CLI
         shell: bash
         run: |
           set -euo pipefail
-          echo "CODEX_HOME=$RUNNER_TEMP/codex-home" >> "$GITHUB_ENV"
           curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
           codex --version
 
-      - name: Lease ChatGPT auth through OIDC
-        shell: bash
-        run: |
-          set -euo pipefail
-          ok=0
-          for i in $(seq 1 30); do
-            rm -rf "$CODEX_HOME"
-            if node scripts/luna_hosted_auth.mjs lease "$LUNA_AUTH_BROKER" "$CODEX_HOME"; then
-              ok=1
-              break
-            fi
-            sleep 3
-          done
-          test "$ok" -eq 1
-
-      - name: Verify subscription login and no API fallback
+      - name: Execute trusted private task with Luna Max only
         shell: bash
         run: |
           set -euo pipefail
           export PATH="$HOME/.local/bin:$PATH"
           unset OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN || true
-          codex login status 2>&1 | tee "$RUNNER_TEMP/login-status.txt"
-          grep -qi "chatgpt" "$RUNNER_TEMP/login-status.txt"
-          test -z "${OPENAI_API_KEY:-}"
-          test -z "${CODEX_API_KEY:-}"
-          test -z "${CODEX_ACCESS_TOKEN:-}"
-
-      - name: Execute Luna Max only
-        shell: bash
-        run: |
-          set -euo pipefail
-          export PATH="$HOME/.local/bin:$PATH"
-          unset OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN || true
-          LOG="$RUNNER_TEMP/luna-smoke.log"
-          set +e
-          codex exec --skip-git-repo-check --ephemeral --ignore-user-config --sandbox read-only --color never -m gpt-5.6-luna -c model_reasoning_effort=max -c agents.enabled=false "Reply with exactly PUBLIC_GITHUB_LUNA_${{ matrix.worker }}_OK and nothing else." 2>&1 | tee "$LOG"
-          rc=${PIPESTATUS[0]}
-          set -e
-          test "$rc" -eq 0
-          grep -q "PUBLIC_GITHUB_LUNA_${{ matrix.worker }}_OK" "$LOG"
-          if grep -Eqi 'model:[[:space:]]*(gpt-5\.6-(astra|sol|terra)|[^[:space:]]*astra)' "$LOG"; then
-            echo "Forbidden non-Luna model observed" >&2
-            exit 1
-          fi
-          echo "PUBLIC_LUNA_ONLY_SMOKE_OK=yes"
-
-      - name: Persist refreshed auth with compare-and-swap
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f "$CODEX_HOME/auth.json" ] && [ -f "$CODEX_HOME/.lease.json" ]; then
-            node scripts/luna_hosted_auth.mjs commit "$LUNA_AUTH_BROKER" "$CODEX_HOME"
-          fi
-
-      - name: Destroy ephemeral credential copy
-        if: always()
-        shell: bash
-        run: |
-          rm -rf "$CODEX_HOME" "$RUNNER_TEMP/login-status.txt" "$RUNNER_TEMP/luna-smoke.log"
+          node scripts/luna_public_fabric.mjs run "$LUNA_AUTH_BROKER" "${{ needs.plan.outputs.cycle_id }}" "${{ matrix.task }}"
