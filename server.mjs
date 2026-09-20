@@ -202,7 +202,10 @@ function validateMeta(meta) {
   const resultFile = String(meta.result_file || "");
   if (!ALLOWED_RESULTS.has(resultFile)) throw new Error("invalid result file");
   const timeout = Math.max(MIN_TIMEOUT, Math.min(MAX_TIMEOUT, Number(meta.timeout || 600)));
-  return { jobId, baseSha, prompt, resultFile, timeout };
+  const subagentCount = meta.subagent_count == null ? null : Math.max(1, Math.floor(Number(meta.subagent_count)));
+  if (subagentCount !== null && (!Number.isFinite(subagentCount) || subagentCount > 100))
+    throw new Error("invalid subagent_count");
+  return { jobId, baseSha, prompt, resultFile, timeout, subagentCount };
 }
 
 function validateArchive(tarFile) {
@@ -251,7 +254,7 @@ async function prepareWorkspace(jobDir, tarFile, baseSha) {
   if (r.code) throw new Error(r.out);
   await fsp.writeFile(
     path.join(jobDir, ".git", "info", "exclude"),
-    ".diana-base-sha\n.last-used\n.codex-last.log\n.codex-app-last.log\n.codex-output-schema.json\n.codex-final-message.json\n.luna-result.json\n.luna-audit.json\n",
+    ".diana-base-sha\n.last-used\n.codex-last.log\n.codex-app-last.log\n.codex-multi-last.log\n.codex-output-schema.json\n.codex-final-message.json\n.luna-result.json\n.luna-audit.json\n",
     { encoding: "utf8" }
   );
   run("git", ["config", "user.name", "Diana Luna Bridge"], { cwd: jobDir });
@@ -517,9 +520,17 @@ class CodexAppServerClient {
     this.proc.stdin.write(JSON.stringify({ method, params }) + "\n");
   }
 
-  async runTurn(jobDir, prompt, timeout, resultFile, logFile) {
+  async runTurn(jobDir, prompt, timeout, resultFile, logFile, multiAgent = null) {
     await this.ensureStarted();
 
+    const agentConfig = multiAgent ? {
+      "agents.enabled": true,
+      "agents.max_concurrent_threads_per_session": multiAgent.maxConcurrent,
+      "agents.default_subagent_model": "gpt-5.6-luna",
+      "agents.default_subagent_reasoning_effort": "max"
+    } : {
+      "agents.enabled": false
+    };
     const threadStart = await this.request("thread/start", {
       model: "gpt-5.6-luna",
       cwd: jobDir,
@@ -527,15 +538,14 @@ class CodexAppServerClient {
       sandbox: "workspace-write",
       ephemeral: true,
       serviceName: "diana_luna_bridge",
-      config: {
-        "agents.enabled": false
-      }
+      config: agentConfig
     }, 60000);
     const threadId = threadStart?.thread?.id;
     if (!threadId) throw new Error("app-server thread/start missing thread id");
 
     const events = [];
     const messages = [];
+    const spawnedAgents = [];
     let turnDoneResolve, turnDoneReject;
     const turnDone = new Promise((resolve, reject) => {
       turnDoneResolve = resolve;
@@ -552,6 +562,14 @@ class CodexAppServerClient {
         const item = p.item || {};
         if (item.type === "agentMessage" && typeof item.text === "string") {
           messages.push({ text: item.text, phase: item.phase || null });
+        }
+        if (item.type === "collabAgentToolCall" && item.tool === "spawnAgent") {
+          spawnedAgents.push({
+            receiverThreadIds: item.receiverThreadIds || [],
+            model: item.model || null,
+            reasoningEffort: item.reasoningEffort || null,
+            status: item.status || null
+          });
         }
       }
       if (method === "turn/completed") {
@@ -624,7 +642,9 @@ class CodexAppServerClient {
           timedOut,
           finalMessageCount: messages.length,
           stderrTail: this.stderrTail.slice(-4000),
-          events: compactEvents,
+          multiAgent,
+        spawnedAgents,
+        events: compactEvents,
         }, null, 2) + "\n",
         { mode: 0o600 }
       );
@@ -635,6 +655,7 @@ class CodexAppServerClient {
         result: parsed,
         threadId,
         turnId,
+        spawnedAgents,
       };
     } finally {
       this.listeners.delete(listener);
@@ -663,7 +684,10 @@ async function handleAppRun(req, res) {
     const jobDir = path.join(JOB_ROOT, "app-" + meta.jobId);
     const prepared = await prepareWorkspace(jobDir, tarFile, meta.baseSha);
     const logFile = path.join(jobDir, ".codex-app-last.log");
-    const exec = await appServer.runTurn(jobDir, meta.prompt, meta.timeout, meta.resultFile, logFile);
+    const exec = await appServer.runTurn(
+      jobDir, meta.prompt, meta.timeout, meta.resultFile, logFile,
+      meta.subagentCount ? { maxConcurrent: meta.subagentCount } : null
+    );
 
     if (exec.result !== null && exec.result !== undefined) {
       await fsp.writeFile(
@@ -683,6 +707,7 @@ async function handleAppRun(req, res) {
       timed_out: exec.timedOut,
       thread_id: exec.threadId,
       turn_id: exec.turnId,
+      spawned_agents: exec.spawnedAgents || [],
       ...collected,
     });
   } catch (e) {
@@ -691,6 +716,56 @@ async function handleAppRun(req, res) {
       backend: "app-server",
       error: String(e.message || e).slice(0, 3000),
     });
+  } finally {
+    await fsp.rm(requestFile, { force: true }).catch(() => {});
+    if (tarFile) await fsp.rm(tarFile, { force: true }).catch(() => {});
+  }
+}
+
+
+async function handleMultiRun(req, res) {
+  const authz = String(req.headers.authorization || "");
+  if (!authz.startsWith("Bearer ")) return json(res, 401, { ok: false, error: "missing bearer" });
+  try { await verifyOidc(authz.slice(7)); }
+  catch (e) { return json(res, 403, { ok: false, error: String(e.message || e) }); }
+
+  const requestFile = path.join(os.tmpdir(), "diana-multi-" + crypto.randomUUID() + ".bin");
+  let tarFile = "";
+  try {
+    await cleanupJobs();
+    await readRequestToFile(req, requestFile);
+    const envelope = await parseEnvelope(requestFile);
+    tarFile = envelope.tarFile;
+    const meta = validateMeta(envelope.meta);
+    if (!meta.subagentCount) throw new Error("subagent_count is required");
+    validateArchive(tarFile);
+    const jobDir = path.join(JOB_ROOT, "multi-" + meta.jobId);
+    const prepared = await prepareWorkspace(jobDir, tarFile, meta.baseSha);
+    const logFile = path.join(jobDir, ".codex-multi-last.log");
+    const exec = await appServer.runTurn(
+      jobDir, meta.prompt, meta.timeout, meta.resultFile, logFile,
+      { maxConcurrent: meta.subagentCount }
+    );
+    if (exec.result !== null && exec.result !== undefined) {
+      await fsp.writeFile(path.join(jobDir, meta.resultFile), JSON.stringify(exec.result) + "\n", { mode: 0o600 });
+    }
+    const collected = await collectResult(jobDir, meta.resultFile, logFile);
+    return json(res, 200, {
+      ok: true,
+      backend: "app-server-multi-agent",
+      job_id: meta.jobId,
+      base_sha: meta.baseSha,
+      reused_workspace: prepared.reused,
+      model_exit: exec.code,
+      timed_out: exec.timedOut,
+      thread_id: exec.threadId,
+      turn_id: exec.turnId,
+      requested_subagents: meta.subagentCount,
+      spawned_agents: exec.spawnedAgents || [],
+      ...collected,
+    });
+  } catch (e) {
+    return json(res, 500, { ok: false, backend: "app-server-multi-agent", error: String(e.message || e).slice(0, 3000) });
   } finally {
     await fsp.rm(requestFile, { force: true }).catch(() => {});
     if (tarFile) await fsp.rm(tarFile, { force: true }).catch(() => {});
@@ -766,6 +841,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && req.url === "/health") return json(res, 200, await health());
     if (req.method === "POST" && req.url === "/run") return await handleRun(req, res);
     if (req.method === "POST" && req.url === "/app-run") return await handleAppRun(req, res);
+    if (req.method === "POST" && req.url === "/multi-run") return await handleMultiRun(req, res);
     return json(res, 404, { ok: false, error: "not found" });
   } catch (e) {
     return json(res, 500, { ok: false, error: String(e.message || e).slice(0, 1000) });
