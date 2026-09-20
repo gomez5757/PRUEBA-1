@@ -1,8 +1,6 @@
 name: ChatGPT Codex capability probe
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
