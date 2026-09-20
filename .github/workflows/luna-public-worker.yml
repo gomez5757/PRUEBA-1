@@ -70,11 +70,11 @@ jobs:
           unset OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN || true
           LOG="$RUNNER_TEMP/luna-smoke.log"
           set +e
-          codex exec --skip-git-repo-check --ephemeral --ignore-user-config --sandbox read-only --color never -m gpt-5.6-luna -c model_reasoning_effort=max -c agents.enabled=false "Reply with exactly PUBLIC_GITHUB_LUNA_MAX_OK and nothing else." 2>&1 | tee "$LOG"
+          codex exec --skip-git-repo-check --ephemeral --ignore-user-config --sandbox read-only --color never -m gpt-5.6-luna -c model_reasoning_effort=max -c agents.enabled=false "Reply with exactly PUBLIC_GITHUB_LUNA_${{ matrix.worker }}_OK and nothing else." 2>&1 | tee "$LOG"
           rc=${PIPESTATUS[0]}
           set -e
           test "$rc" -eq 0
-          grep -q "PUBLIC_GITHUB_LUNA_MAX_OK" "$LOG"
+          grep -q "PUBLIC_GITHUB_LUNA_${{ matrix.worker }}_OK" "$LOG"
           if grep -Eqi 'model:[[:space:]]*(gpt-5\.6-(astra|sol|terra)|[^[:space:]]*astra)' "$LOG"; then
             echo "Forbidden non-Luna model observed" >&2
             exit 1
