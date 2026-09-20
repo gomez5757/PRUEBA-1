@@ -9,6 +9,7 @@ on:
     paths:
       - .github/workflows/luna-public-worker.yml
       - scripts/luna_public_fabric.mjs
+      - .luna-public-wake
 
 permissions:
   contents: read
