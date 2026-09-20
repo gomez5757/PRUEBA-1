@@ -257,9 +257,14 @@ async function cleanupJobs() {
     } catch {}
   }
   entries.sort((a, b) => b.m - a.m);
-  const cutoff = Date.now() - 3 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const cutoff = now - 3 * 24 * 60 * 60 * 1000;
+  const smokeCutoff = now - 5 * 60 * 1000;
   for (let i = 0; i < entries.length; i++) {
-    if (i >= 8 || entries[i].m < cutoff) await fsp.rm(entries[i].p, { recursive: true, force: true });
+    const name = path.basename(entries[i].p);
+    const staleSmoke = name.startsWith("smoke-") && entries[i].m < smokeCutoff;
+    if (staleSmoke || i >= 6 || entries[i].m < cutoff)
+      await fsp.rm(entries[i].p, { recursive: true, force: true });
   }
 }
 
