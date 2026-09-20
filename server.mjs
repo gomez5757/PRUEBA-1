@@ -4,6 +4,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import readline from "node:readline";
 import { spawn, spawnSync } from "node:child_process";
 
 const PORT = Number(process.env.PORT || 8080);
@@ -422,6 +423,280 @@ async function collectResult(jobDir, resultFile, logFile) {
   };
 }
 
+
+class CodexAppServerClient {
+  constructor() {
+    this.proc = null;
+    this.rl = null;
+    this.nextId = 1;
+    this.pending = new Map();
+    this.listeners = new Set();
+    this.startPromise = null;
+    this.stderrTail = "";
+  }
+
+  async ensureStarted() {
+    if (this.proc && this.proc.exitCode === null) return;
+    if (this.startPromise) return this.startPromise;
+    this.startPromise = this._start();
+    try { await this.startPromise; }
+    finally { this.startPromise = null; }
+  }
+
+  async _start() {
+    const env = {
+      PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
+      HOME: "/root",
+      CODEX_HOME,
+      LANG: "C.UTF-8",
+      LC_ALL: "C.UTF-8",
+      CI: "1",
+    };
+    const proc = spawn("codex", ["app-server", "--stdio"], {
+      env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    this.proc = proc;
+    this.stderrTail = "";
+    this.rl = readline.createInterface({ input: proc.stdout });
+
+    proc.stderr.on("data", (buf) => {
+      this.stderrTail = (this.stderrTail + buf.toString("utf8")).slice(-16000);
+    });
+
+    this.rl.on("line", (line) => {
+      if (!line.trim()) return;
+      let msg;
+      try { msg = JSON.parse(line); }
+      catch { return; }
+      if (Object.prototype.hasOwnProperty.call(msg, "id") && this.pending.has(msg.id)) {
+        const { resolve, reject } = this.pending.get(msg.id);
+        this.pending.delete(msg.id);
+        if (msg.error) reject(new Error("app-server RPC error: " + JSON.stringify(msg.error).slice(0, 2000)));
+        else resolve(msg.result);
+        return;
+      }
+      for (const listener of this.listeners) {
+        try { listener(msg); } catch {}
+      }
+    });
+
+    const failAll = (reason) => {
+      const err = reason instanceof Error ? reason : new Error(String(reason || "app-server exited"));
+      for (const { reject } of this.pending.values()) reject(err);
+      this.pending.clear();
+      this.proc = null;
+    };
+    proc.on("error", failAll);
+    proc.on("exit", (code, signal) => failAll(new Error("app-server exited code=" + code + " signal=" + signal)));
+
+    const init = await this.request("initialize", {
+      clientInfo: { name: "diana_luna_bridge", title: "Diana Luna Bridge", version: "1.0.0" },
+    }, 30000);
+    if (!init) throw new Error("app-server initialize returned no result");
+    this.notify("initialized", {});
+  }
+
+  request(method, params, timeoutMs = 30000) {
+    if (!this.proc || this.proc.exitCode !== null) return Promise.reject(new Error("app-server unavailable"));
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.pending.delete(id)) reject(new Error("app-server RPC timeout: " + method));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+      });
+      this.proc.stdin.write(JSON.stringify({ method, id, params }) + "\n");
+    });
+  }
+
+  notify(method, params) {
+    if (!this.proc || this.proc.exitCode !== null) throw new Error("app-server unavailable");
+    this.proc.stdin.write(JSON.stringify({ method, params }) + "\n");
+  }
+
+  async runTurn(jobDir, prompt, timeout, resultFile, logFile) {
+    await this.ensureStarted();
+
+    const threadStart = await this.request("thread/start", {
+      model: "gpt-5.6-luna",
+      cwd: jobDir,
+      approvalPolicy: "never",
+      sandbox: "workspace-write",
+      ephemeral: true,
+      serviceName: "diana_luna_bridge",
+      config: {
+        "agents.enabled": false
+      }
+    }, 60000);
+    const threadId = threadStart?.thread?.id;
+    if (!threadId) throw new Error("app-server thread/start missing thread id");
+
+    const events = [];
+    const messages = [];
+    let turnDoneResolve, turnDoneReject;
+    const turnDone = new Promise((resolve, reject) => {
+      turnDoneResolve = resolve;
+      turnDoneReject = reject;
+    });
+    let turnId = null;
+
+    const listener = (msg) => {
+      const method = String(msg?.method || "");
+      const p = msg?.params || {};
+      if (p.threadId && p.threadId !== threadId) return;
+
+      if (method === "item/completed") {
+        const item = p.item || {};
+        if (item.type === "agentMessage" && typeof item.text === "string") {
+          messages.push({ text: item.text, phase: item.phase || null });
+        }
+      }
+      if (method === "turn/completed") {
+        if (turnId && p?.turn?.id && p.turn.id !== turnId) return;
+        turnDoneResolve(p.turn || {});
+      }
+      if (method === "error") {
+        events.push({ method, params: p });
+      }
+      if (events.length < 200) events.push({ method, params: p });
+    };
+    this.listeners.add(listener);
+
+    let timedOut = false;
+    try {
+      const turn = await this.request("turn/start", {
+        threadId,
+        input: [{ type: "text", text: prompt }],
+        cwd: jobDir,
+        approvalPolicy: "never",
+        sandboxPolicy: {
+          type: "workspaceWrite",
+          writableRoots: [jobDir],
+          networkAccess: false
+        },
+        model: "gpt-5.6-luna",
+        effort: "max",
+        summary: "concise",
+        outputSchema: outputSchema(resultFile)
+      }, 60000);
+      turnId = turn?.turn?.id || null;
+
+      let timer;
+      const timeoutPromise = new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ __timeout: true }), timeout * 1000);
+      });
+      const completed = await Promise.race([turnDone, timeoutPromise]);
+      clearTimeout(timer);
+      if (completed?.__timeout) {
+        timedOut = true;
+        if (turnId) {
+          await this.request("turn/interrupt", { threadId, turnId }, 15000).catch(() => {});
+        }
+      }
+
+      let finalText = "";
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].phase === "final_answer") { finalText = messages[i].text; break; }
+        if (!finalText) finalText = messages[i].text;
+      }
+
+      let parsed = null;
+      if (finalText) {
+        try { parsed = JSON.parse(finalText); }
+        catch {}
+      }
+
+      const compactEvents = events.slice(-60).map((e) => ({
+        method: e.method,
+        threadId: e.params?.threadId || null,
+        turnId: e.params?.turnId || e.params?.turn?.id || null,
+        itemType: e.params?.item?.type || null,
+        status: e.params?.turn?.status || e.params?.item?.status || null,
+      }));
+      await fsp.writeFile(logFile,
+        JSON.stringify({
+          backend: "app-server",
+          threadId,
+          turnId,
+          timedOut,
+          finalMessageCount: messages.length,
+          stderrTail: this.stderrTail.slice(-4000),
+          events: compactEvents,
+        }, null, 2) + "\n",
+        { mode: 0o600 }
+      );
+
+      return {
+        code: timedOut ? 124 : (parsed ? 0 : 2),
+        timedOut,
+        result: parsed,
+        threadId,
+        turnId,
+      };
+    } finally {
+      this.listeners.delete(listener);
+      await this.request("thread/delete", { threadId }, 15000).catch(() => {});
+    }
+  }
+}
+
+const appServer = new CodexAppServerClient();
+
+async function handleAppRun(req, res) {
+  const authz = String(req.headers.authorization || "");
+  if (!authz.startsWith("Bearer ")) return json(res, 401, { ok: false, error: "missing bearer" });
+  try { await verifyOidc(authz.slice(7)); }
+  catch (e) { return json(res, 403, { ok: false, error: String(e.message || e) }); }
+
+  const requestFile = path.join(os.tmpdir(), "diana-app-" + crypto.randomUUID() + ".bin");
+  let tarFile = "";
+  try {
+    await cleanupJobs();
+    await readRequestToFile(req, requestFile);
+    const envelope = await parseEnvelope(requestFile);
+    tarFile = envelope.tarFile;
+    const meta = validateMeta(envelope.meta);
+    validateArchive(tarFile);
+    const jobDir = path.join(JOB_ROOT, "app-" + meta.jobId);
+    const prepared = await prepareWorkspace(jobDir, tarFile, meta.baseSha);
+    const logFile = path.join(jobDir, ".codex-app-last.log");
+    const exec = await appServer.runTurn(jobDir, meta.prompt, meta.timeout, meta.resultFile, logFile);
+
+    if (exec.result !== null && exec.result !== undefined) {
+      await fsp.writeFile(
+        path.join(jobDir, meta.resultFile),
+        JSON.stringify(exec.result) + "\n",
+        { mode: 0o600 }
+      );
+    }
+    const collected = await collectResult(jobDir, meta.resultFile, logFile);
+    return json(res, 200, {
+      ok: true,
+      backend: "app-server",
+      job_id: meta.jobId,
+      base_sha: meta.baseSha,
+      reused_workspace: prepared.reused,
+      model_exit: exec.code,
+      timed_out: exec.timedOut,
+      thread_id: exec.threadId,
+      turn_id: exec.turnId,
+      ...collected,
+    });
+  } catch (e) {
+    return json(res, 500, {
+      ok: false,
+      backend: "app-server",
+      error: String(e.message || e).slice(0, 3000),
+    });
+  } finally {
+    await fsp.rm(requestFile, { force: true }).catch(() => {});
+    if (tarFile) await fsp.rm(tarFile, { force: true }).catch(() => {});
+  }
+}
+
 async function health() {
   const mount = run("findmnt", ["-n", CODEX_HOME]);
   const auth = run("codex", ["login", "status"]);
@@ -490,6 +765,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/health") return json(res, 200, await health());
     if (req.method === "POST" && req.url === "/run") return await handleRun(req, res);
+    if (req.method === "POST" && req.url === "/app-run") return await handleAppRun(req, res);
     return json(res, 404, { ok: false, error: "not found" });
   } catch (e) {
     return json(res, 500, { ok: false, error: String(e.message || e).slice(0, 1000) });
