@@ -284,7 +284,6 @@ async function executeTask(broker, cycleArg, taskArg) {
     ].join("\n");
 
     const args = [
-      "--enable", "use_legacy_landlock",
       "exec",
       "--skip-git-repo-check",
       "--ephemeral",
