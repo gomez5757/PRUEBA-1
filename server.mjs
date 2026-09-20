@@ -100,7 +100,7 @@ async function verifyOidc(token) {
   if (!safeEqual(String(claims.repository_id || ""), EXPECTED_REPO_ID))
     throw new Error("wrong repository id");
   if (!ALLOWED_REFS.has(String(claims.ref || ""))) throw new Error("ref not allowed");
-  if (claims.runner_environment && claims.runner_environment !== "github-hosted")
+  if (!safeEqual(String(claims.runner_environment || ""), "self-hosted"))
     throw new Error("runner environment not allowed");
   const ev = String(claims.event_name || "");
   if (!["schedule", "workflow_dispatch", "push"].includes(ev)) throw new Error("event not allowed");
