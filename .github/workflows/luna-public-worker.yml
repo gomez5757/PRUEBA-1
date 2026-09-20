@@ -56,7 +56,7 @@ jobs:
           set -euo pipefail
           export PATH="$HOME/.local/bin:$PATH"
           unset OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN || true
-          codex login status | tee "$RUNNER_TEMP/login-status.txt"
+          codex login status 2>&1 | tee "$RUNNER_TEMP/login-status.txt"
           grep -qi "chatgpt" "$RUNNER_TEMP/login-status.txt"
           test -z "${OPENAI_API_KEY:-}"
           test -z "${CODEX_API_KEY:-}"
