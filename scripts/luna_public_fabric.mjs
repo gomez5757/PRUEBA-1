@@ -296,6 +296,8 @@ async function executeTask(broker, cycleArg, taskArg) {
       "-c", "model_reasoning_effort=max",
       "-c", "approval_policy=never",
       "-c", "agents.enabled=false",
+      "-c", "web_search=\"disabled\"",
+      "-c", "apps._default.enabled=false",
       "-c", "sandbox_workspace_write.network_access=false",
       prompt,
     ];
