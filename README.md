@@ -1,12 +1,15 @@
-# Luna Engine
+# Luna Fabric — infraestructura pública
 
-Servicio genérico de inferencia para el carril autónomo de Diana+.
+Infraestructura genérica para ejecutar workers Codex efímeros sin publicar el código privado de Diana+.
 
-- Ejecuta Codex CLI con GPT-5.6 Luna en Railway.
-- No contiene código privado de Diana+.
-- No contiene tokens GitHub ni credenciales de ChatGPT en el repositorio.
-- La autenticación Codex vive únicamente en un volumen persistente privado de Railway.
-- El acceso de Diana+ al motor se valida mediante GitHub Actions OIDC.
-- El motor rechaza runners que no sean self-hosted y limita la concurrencia para proteger memoria.
+- **Inferencia:** GitHub-hosted runners efímeros ejecutan exclusivamente `gpt-5.6-luna` con razonamiento `max`.
+- **Sin Codex Cloud:** este circuito no usa `@codex`, Work ni un agente principal Astra/Sol/Terra.
+- **Railway no ejecuta modelos:** `luna-engine` actúa como broker/caja fuerte de autenticación y cola privada.
+- **Credenciales:** la sesión ChatGPT/Codex permanece en un volumen privado de Railway; cada runner recibe solo una copia temporal cifrada y la destruye al terminar.
+- **Código privado:** Diana+ no se guarda en este repositorio. Los snapshots y parches viajan temporalmente a través del broker autenticado con OIDC.
+- **Sandbox:** los workers usan `workspace-write`, red local deshabilitada, búsqueda web deshabilitada, apps/conectores deshabilitados y AppArmor + bubblewrap en Ubuntu 24.04.
+- **Fail closed:** si el modelo observado no es exactamente Luna, el esfuerzo no es `max`, falla la autenticación, el sandbox o la validación de rutas, el parche se rechaza.
+- **Concurrencia:** la matrix dinámica puede usar varias VMs separadas; Railway no limita la RAM de los modelos.
+- **Sin producción:** esta infraestructura no publica CWS, no modifica `main`, no despliega servicios de Diana+ ni accede a datos/licencias reales.
 
-Este repositorio público contiene únicamente infraestructura genérica.
+El coordinador en ChatGPT Web decide cuántos trabajos independientes merece la pena lanzar. GitHub privado sigue siendo la memoria y la fuente de verdad del producto.
