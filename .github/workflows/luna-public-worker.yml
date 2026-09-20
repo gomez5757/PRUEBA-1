@@ -126,7 +126,7 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           mkdir -p "$RUNNER_TEMP/sandbox-probe"
           cd "$RUNNER_TEMP/sandbox-probe"
-          codex sandbox linux -- bash -lc 'printf "RAW_SANDBOX_OK\n" > raw.txt'
+          codex --enable use_legacy_landlock sandbox linux -- bash -lc 'printf "RAW_SANDBOX_OK\n" > raw.txt'
           cat raw.txt
 
       - name: Probe Luna workspace-write tools
@@ -136,7 +136,7 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           unset OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN || true
           cd "$RUNNER_TEMP/sandbox-probe"
-          codex exec --skip-git-repo-check --ephemeral --ignore-user-config --sandbox workspace-write --color never -m gpt-5.6-luna -c model_reasoning_effort=max -c agents.enabled=false "Use your local command or patch tools to create probe.txt containing exactly LUNA_WORKSPACE_WRITE_OK followed by a newline. Then verify the file exists and reply exactly DONE."
+          codex exec --skip-git-repo-check --ephemeral --ignore-user-config --sandbox workspace-write --color never -m gpt-5.6-luna -c model_reasoning_effort=max -c agents.enabled=false -c features.use_legacy_landlock=true -c sandbox_workspace_write.network_access=false "Use your local command or patch tools to create probe.txt containing exactly LUNA_WORKSPACE_WRITE_OK followed by a newline. Then verify the file exists and reply exactly DONE."
           test "$(cat probe.txt)" = "LUNA_WORKSPACE_WRITE_OK"
 
       - name: Persist auth and clean
