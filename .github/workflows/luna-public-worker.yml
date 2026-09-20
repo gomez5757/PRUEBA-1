@@ -15,9 +15,13 @@ permissions:
 
 jobs:
   smoke:
-    name: Luna Max only public-runner smoke
+    name: Luna Max public smoke ${{ matrix.worker }}
     runs-on: ubuntu-latest
     timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: [1, 2, 3, 4, 5]
     env:
       LUNA_AUTH_BROKER: https://luna-engine-production.up.railway.app
     steps:
