@@ -1,8 +1,6 @@
 name: Luna Public Worker
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch: {}
   push:
     branches: [main]
@@ -22,6 +20,7 @@ concurrency:
 jobs:
   plan:
     name: Claim one private Diana cycle
+    if: github.event_name != 'push' || !contains(github.event.head_commit.message, 'sandbox probe')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -80,7 +79,7 @@ jobs:
           sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/bwrap-userns-restrict
           sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
           cat > "$RUNNER_TEMP/luna-requirements.toml" <<'EOF'
-          allowed_sandbox_modes = ["workspace-write"]
+          allowed_sandbox_modes = ["read-only", "workspace-write"]
           allowed_web_search_modes = []
           allow_managed_hooks_only = true
           allow_browser_and_computer_use = false
@@ -139,7 +138,7 @@ jobs:
           sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/bwrap-userns-restrict
           sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
           cat > "$RUNNER_TEMP/luna-requirements.toml" <<'EOF'
-          allowed_sandbox_modes = ["workspace-write"]
+          allowed_sandbox_modes = ["read-only", "workspace-write"]
           allowed_web_search_modes = []
           allow_managed_hooks_only = true
           allow_browser_and_computer_use = false
