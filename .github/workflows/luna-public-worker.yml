@@ -1,4 +1,10 @@
-name: Luna Public Worker
+name: Luna safety validation - execution paused
+
+# Inference is deliberately disabled. The session-handling worker update was
+# blocked by the platform safety control. Do not restore or route around it.
+# The previously validated sandbox workflow is preserved on:
+# backup/luna-working-sandbox-before-security-gate-20260921
+# This workflow runs deterministic tests only: no OIDC, no auth lease, no model.
 
 on:
   workflow_dispatch: {}
@@ -6,192 +12,35 @@ on:
     branches: [main]
     paths:
       - .github/workflows/luna-public-worker.yml
-      - scripts/luna_public_fabric.mjs
-      - .luna-public-wake
+      - scripts/luna_safety.mjs
+      - tests/luna_safety.test.mjs
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
-  group: luna-public-fabric-${{ github.run_id }}
+  group: luna-safety-validation
   cancel-in-progress: false
 
 jobs:
-  plan:
-    name: Claim one private Diana cycle
-    if: github.event_name != 'push' || !contains(github.event.head_commit.message, 'sandbox probe')
+  validate:
+    name: Credential-free policy tests
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    outputs:
-      has_work: ${{ steps.plan.outputs.has_work }}
-      cycle_id: ${{ steps.plan.outputs.cycle_id }}
-      tasks: ${{ steps.plan.outputs.tasks }}
-    env:
-      LUNA_AUTH_BROKER: https://luna-engine-production.up.railway.app
     steps:
-      - uses: actions/checkout@v4
+      - name: Read exact infrastructure commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
-      - id: plan
-        name: Claim pending work without exposing prompts
+      - name: Verify source syntax and policy regressions
         shell: bash
         run: |
           set -euo pipefail
-          CLAIM="$RUNNER_TEMP/claim.json"
-          node scripts/luna_public_fabric.mjs claim "$LUNA_AUTH_BROKER" > "$CLAIM"
-          node - "$CLAIM" "$GITHUB_OUTPUT" <<'NODE'
-          const fs=require("fs");
-          const [file,out]=process.argv.slice(2);
-          const d=JSON.parse(fs.readFileSync(file,"utf8"));
-          fs.appendFileSync(out, "has_work="+(d.has_work?"true":"false")+"\n");
-          fs.appendFileSync(out, "cycle_id="+(d.cycle_id||"")+"\n");
-          fs.appendFileSync(out, "tasks="+JSON.stringify(d.task_ids||[])+"\n");
-          NODE
-          rm -f "$CLAIM"
-
-  worker:
-    name: Luna Max / ${{ matrix.task }}
-    needs: plan
-    if: needs.plan.outputs.has_work == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      max-parallel: 20
-      matrix:
-        task: ${{ fromJSON(needs.plan.outputs.tasks) }}
-    env:
-      LUNA_AUTH_BROKER: https://luna-engine-production.up.railway.app
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Prepare hardened Codex Linux sandbox
+          node --check scripts/luna_safety.mjs
+          node --test tests/luna_safety.test.mjs
+      - name: State readiness separately from tests
         shell: bash
         run: |
-          set -euo pipefail
-          export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap apparmor-profiles apparmor-utils
-          test -f /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
-          sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/bwrap-userns-restrict
-          sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
-          cat > "$RUNNER_TEMP/luna-requirements.toml" <<'EOF'
-          allowed_sandbox_modes = ["read-only", "workspace-write"]
-          allowed_web_search_modes = []
-          allow_managed_hooks_only = true
-          allow_browser_and_computer_use = false
-          allow_appshots = false
-          allow_remote_control = false
-          allow_login_shell = false
-          mcp_servers = {}
-
-          [features]
-          apps = false
-          browser_use = false
-          browser_use_external = false
-          computer_use = false
-          EOF
-          sudo install -d -m 0755 /etc/codex
-          sudo install -m 0644 "$RUNNER_TEMP/luna-requirements.toml" /etc/codex/requirements.toml
-          command -v bwrap >/dev/null
-
-      - name: Install isolated Codex CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.local/bin:$PATH"
-          codex --version
-
-      - name: Execute trusted private task with Luna Max only
-        shell: bash
-        run: |
-          set -euo pipefail
-          export PATH="$HOME/.local/bin:$PATH"
-          unset OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN || true
-          node scripts/luna_public_fabric.mjs run "$LUNA_AUTH_BROKER" "${{ needs.plan.outputs.cycle_id }}" "${{ matrix.task }}"
-
-  sandbox_probe:
-    name: Codex Linux sandbox probe
-    if: github.event_name == 'push' && contains(github.event.head_commit.message, 'sandbox probe')
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
-    env:
-      LUNA_AUTH_BROKER: https://luna-engine-production.up.railway.app
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Install and inspect Linux sandbox prerequisites
-        shell: bash
-        run: |
-          set -euo pipefail
-          export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap apparmor-profiles apparmor-utils
-          test -f /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
-          sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/bwrap-userns-restrict
-          sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
-          cat > "$RUNNER_TEMP/luna-requirements.toml" <<'EOF'
-          allowed_sandbox_modes = ["read-only", "workspace-write"]
-          allowed_web_search_modes = []
-          allow_managed_hooks_only = true
-          allow_browser_and_computer_use = false
-          allow_appshots = false
-          allow_remote_control = false
-          allow_login_shell = false
-          mcp_servers = {}
-
-          [features]
-          apps = false
-          browser_use = false
-          browser_use_external = false
-          computer_use = false
-          EOF
-          sudo install -d -m 0755 /etc/codex
-          sudo install -m 0644 "$RUNNER_TEMP/luna-requirements.toml" /etc/codex/requirements.toml
-          command -v bwrap
-          bwrap --version
-          sysctl kernel.unprivileged_userns_clone 2>/dev/null || true
-          sysctl user.max_user_namespaces 2>/dev/null || true
-
-      - name: Install Codex and lease ChatGPT auth
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.local/bin:$PATH"
-          echo "CODEX_HOME=$RUNNER_TEMP/codex-home" >> "$GITHUB_ENV"
-          node scripts/luna_hosted_auth.mjs lease "$LUNA_AUTH_BROKER" "$RUNNER_TEMP/codex-home"
-
-      - name: Prepare synthetic workspace
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/sandbox-probe"
-
-      - name: Probe Luna workspace-write tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          export PATH="$HOME/.local/bin:$PATH"
-          unset OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN || true
-          cd "$RUNNER_TEMP/sandbox-probe"
-          codex exec --skip-git-repo-check --ephemeral --ignore-user-config --sandbox workspace-write --color never -m gpt-5.6-luna -c model_reasoning_effort=max -c approval_policy=never -c agents.enabled=false -c 'web_search="disabled"' -c apps._default.enabled=false -c sandbox_workspace_write.network_access=false "Use your local command or patch tools to create probe.txt containing exactly LUNA_WORKSPACE_WRITE_OK followed by a newline. Then verify the file exists and reply exactly DONE."
-          test "$(cat probe.txt)" = "LUNA_WORKSPACE_WRITE_OK"
-
-      - name: Persist auth and clean
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f "$CODEX_HOME/auth.json" ] && [ -f "$CODEX_HOME/.lease.json" ]; then
-            node scripts/luna_hosted_auth.mjs commit "$LUNA_AUTH_BROKER" "$CODEX_HOME"
-          fi
-          rm -rf "$CODEX_HOME" "$RUNNER_TEMP/sandbox-probe"
+          printf '%s\n' 'POLICY_TESTS=PASS' 'LUNA_RUNTIME=PAUSED_SECURITY_REVIEW' 'INFERENCE_CALLS=0' 'SCHEDULER=DISABLED'
+          printf '%s\n' '## Runtime remains paused' 'Passing policy tests do not mean that the autonomous pipeline is operational.' >> "$GITHUB_STEP_SUMMARY"
