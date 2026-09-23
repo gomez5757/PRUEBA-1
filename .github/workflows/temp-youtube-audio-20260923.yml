@@ -10,6 +10,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Install ffmpeg
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+
       - name: Download 3 permitted YouTube audios via public Loader.to API
         shell: bash
         run: |
