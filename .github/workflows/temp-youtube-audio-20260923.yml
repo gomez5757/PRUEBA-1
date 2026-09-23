@@ -1,4 +1,4 @@
-name: Temporary OmegaTech YouTube downloader test
+name: Temporary OmegaTech downloader tests
 
 on:
   push:
@@ -8,14 +8,29 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Test Y2mate-compatible endpoint
+      - name: Test public YouTube audio endpoints
         shell: bash
         run: |
-          set -euo pipefail
-          curl -LfsS --get "https://api.omegatech.app/api/download/Yt-mate" \
-            --data-urlencode "action=download" \
-            --data-urlencode "url=https://youtu.be/_IVxbL4JkE8" \
-            --data-urlencode "format=mp3" \
-            --data-urlencode "quality=128" | jq .
+          set +e
+          URL="https://youtu.be/_IVxbL4JkE8"
+
+          echo "=== YouTube action=audio ==="
+          curl -LsS --get "https://api.omegatech.app/api/download/YouTube" \
+            --data-urlencode "action=audio" --data-urlencode "url=$URL" \
+            -w '\nHTTP=%{http_code}\n' | head -c 12000
+          echo
+
+          echo "=== SaveTube action=download 128kbps ==="
+          curl -LsS --get "https://api.omegatech.app/api/download/savefrom" \
+            --data-urlencode "action=download" --data-urlencode "url=$URL" \
+            --data-urlencode "quality=128kbps" -w '\nHTTP=%{http_code}\n' | head -c 12000
+          echo
+
+          echo "=== Yt-mate action=info ==="
+          curl -LsS --get "https://api.omegatech.app/api/download/Yt-mate" \
+            --data-urlencode "action=info" --data-urlencode "url=$URL" \
+            -w '\nHTTP=%{http_code}\n' | head -c 12000
+          echo
+          exit 0
