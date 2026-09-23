@@ -1,4 +1,4 @@
-name: Temporary Loader progress check
+name: Temporary Loader download header check
 
 on:
   push:
@@ -10,7 +10,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Check completed conversion
+      - name: Inspect download URL headers
         shell: bash
         run: |
-          curl -LfsS "https://lto2.affadaffa.com/api/progress?id=qIM7f1yFJ49k9p5MPn7Vey3" | jq .
+          set +e
+          for U in \
+            "https://aiden90.savenow.to/pacific/?qIM7f1yFJ49k9p5MPn7Vey3" \
+            "https://179-43-156-194.nip.io/pacific/?qIM7f1yFJ49k9p5MPn7Vey3" \
+            "https://179-43-156-194.sslip.io/pacific/?qIM7f1yFJ49k9p5MPn7Vey3" \
+            "http://179-43-156-194.traefik.me/pacific/?qIM7f1yFJ49k9p5MPn7Vey3"; do
+            echo "===== $U ====="
+            curl -ksSIL --max-time 30 -A 'Mozilla/5.0' -e 'https://loader.to/' "$U" | grep -Ei 'HTTP/|content-type|content-length|content-disposition|location' | tail -20
+          done
+          exit 0
