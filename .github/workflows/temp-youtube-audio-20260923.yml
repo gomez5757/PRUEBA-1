@@ -1,4 +1,4 @@
-name: Temporary OmegaTech endpoint discovery
+name: Temporary OmegaTech docs internals
 
 on:
   push:
@@ -6,27 +6,16 @@ on:
       - ".github/workflows/temp-youtube-audio-20260923.yml"
 
 jobs:
-  discover:
+  inspect:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Find YouTube downloader endpoint in public docs assets
+      - name: Inspect public docs loader
         shell: bash
         run: |
           set -euo pipefail
-          BASE="https://api.omegatech.app"
-          curl -LfsS "$BASE/api.html" -o /tmp/api.html
-          echo "=== script assets ==="
-          grep -Eo '<script[^>]+src="[^"]+"' /tmp/api.html | sed -E 's/.*src="([^"]+)".*/\1/' | tee /tmp/scripts.txt || true
-          while read -r S; do
-            [ -n "$S" ] || continue
-            case "$S" in
-              http*) U="$S" ;;
-              /*) U="$BASE$S" ;;
-              *) U="$BASE/$S" ;;
-            esac
-            echo "=== $U ==="
-            curl -LfsS --max-time 30 "$U" 2>/dev/null | grep -Eio '.{0,120}(youtube|ytmp3|mp3|downloader).{0,220}' | head -80 || true
-          done < /tmp/scripts.txt
-          echo "=== html matches ==="
-          grep -Eio '.{0,120}(youtube|ytmp3|mp3|downloader).{0,220}' /tmp/api.html | head -100 || true
+          curl -LfsS https://api.omegatech.app/api.html -o /tmp/api.html
+          echo "=== fetch/XHR/config references ==="
+          grep -Ein 'fetch\(|axios|endpoints|api[-_]?data|manifest|json|handshake|gateway|baseUrl|baseURL|apiHost|API_HOST' /tmp/api.html | head -240 || true
+          echo "=== URL/path literals ==="
+          grep -Eo 'https?://[^"<> ]+|/[A-Za-z0-9._/-]+\.(json|js)|/api/[A-Za-z0-9_?=&./:-]+' /tmp/api.html | sort -u | head -300 || true
