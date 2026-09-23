@@ -1,4 +1,4 @@
-name: Temporary OmegaTech docs internals
+name: Temporary OmegaTech endpoint discovery
 
 on:
   push:
@@ -6,16 +6,16 @@ on:
       - ".github/workflows/temp-youtube-audio-20260923.yml"
 
 jobs:
-  inspect:
+  discover:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Inspect public docs loader
+      - name: Read public OpenAPI index
         shell: bash
         run: |
           set -euo pipefail
-          curl -LfsS https://api.omegatech.app/api.html -o /tmp/api.html
-          echo "=== fetch/XHR/config references ==="
-          grep -Ein 'fetch\(|axios|endpoints|api[-_]?data|manifest|json|handshake|gateway|baseUrl|baseURL|apiHost|API_HOST' /tmp/api.html | head -240 || true
-          echo "=== URL/path literals ==="
-          grep -Eo 'https?://[^"<> ]+|/[A-Za-z0-9._/-]+\.(json|js)|/api/[A-Za-z0-9_?=&./:-]+' /tmp/api.html | sort -u | head -300 || true
+          curl -LfsS https://api.omegatech.app/openapi.json -o /tmp/openapi.json
+          echo "=== top-level ==="
+          jq '{baseURL, count:(.endpoints|length)}' /tmp/openapi.json
+          echo "=== YouTube/downloader matches ==="
+          jq -c '.endpoints[] | select(((.name // "") + " " + (.description // "") + " " + (.category // "") + " " + (.path // "") + " " + (.url // "")) | ascii_downcase | test("youtube|ytmp3|downloader|mp3|mp4"))' /tmp/openapi.json | head -120
