@@ -1,4 +1,4 @@
-name: Temporary OmegaTech endpoint discovery
+name: Temporary OmegaTech YouTube downloader test
 
 on:
   push:
@@ -6,16 +6,16 @@ on:
       - ".github/workflows/temp-youtube-audio-20260923.yml"
 
 jobs:
-  discover:
+  test:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Read public OpenAPI index
+      - name: Test Y2mate-compatible endpoint
         shell: bash
         run: |
           set -euo pipefail
-          curl -LfsS https://api.omegatech.app/openapi.json -o /tmp/openapi.json
-          echo "=== top-level ==="
-          jq '{baseURL, count:(.endpoints|length)}' /tmp/openapi.json
-          echo "=== YouTube/downloader matches ==="
-          jq -c '.endpoints[] | select(((.name // "") + " " + (.description // "") + " " + (.category // "") + " " + (.path // "") + " " + (.url // "")) | ascii_downcase | test("youtube|ytmp3|downloader|mp3|mp4"))' /tmp/openapi.json | head -120
+          curl -LfsS --get "https://api.omegatech.app/api/download/Yt-mate" \
+            --data-urlencode "action=download" \
+            --data-urlencode "url=https://youtu.be/_IVxbL4JkE8" \
+            --data-urlencode "format=mp3" \
+            --data-urlencode "quality=128" | jq .
