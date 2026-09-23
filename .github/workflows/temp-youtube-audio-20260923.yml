@@ -1,4 +1,4 @@
-name: Temporary inspect En Libertad RSS
+name: Temporary inspect iVoox enclosure delivery
 
 on:
   push:
@@ -10,28 +10,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Inspect RSS enclosures
+      - name: Inspect redirects and range headers
         shell: bash
         run: |
           set -euo pipefail
-          curl -LfsS --retry 3 "https://feeds.ivoox.com/feed_fg_f1781509_filtro_1.xml" -o feed.xml
-          python - <<'PY'
-          import xml.etree.ElementTree as ET
-          root=ET.parse("feed.xml").getroot()
-          needles=[
-              "Los informes del CNI dejan al descubierto al Gobierno",
-              "La traición del Gobierno al pueblo español",
-              "La Junta Electoral tumba el plan de Sánchez",
-          ]
-          for item in root.findall(".//item"):
-              title=(item.findtext("title") or "").strip()
-              if any(n.lower() in title.lower() for n in needles):
-                  enc=item.find("enclosure")
-                  print("TITLE:", title)
-                  print("GUID:", (item.findtext("guid") or "").strip())
-                  print("PUB:", (item.findtext("pubDate") or "").strip())
-                  print("ENC:", enc.attrib.get("url") if enc is not None else "")
-                  print("LEN:", enc.attrib.get("length") if enc is not None else "")
-                  print("TYPE:", enc.attrib.get("type") if enc is not None else "")
-                  print("---")
-          PY
+          URL='https://www.ivoox.com/informes-del-cni-dejan-al-descubierto-al_mf_180328233_feed_1.mp3?d=1788981014'
+          for UA in \
+            'curl/8.5.0' \
+            'PodcastAddict/v2026 Android' \
+            'AntennaPod/3.8.0' \
+            'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/153 Mobile Safari/537.36'; do
+            echo "===== UA: $UA ====="
+            rm -f headers part.bin
+            curl -L -sS --max-time 30 -A "$UA" -r 0-1023 -D headers -o part.bin \
+              -w 'HTTP=%{http_code} EFFECTIVE=%{url_effective} SIZE=%{size_download} TYPE=%{content_type}\n' "$URL"
+            echo "--- final/interesting headers ---"
+            grep -Ei '^(HTTP/|location:|content-length:|content-range:|accept-ranges:|content-type:)' headers | tail -n 20 || true
+            echo "part_size=$(wc -c < part.bin)"
+          done
