@@ -1,4 +1,4 @@
-name: Temporary alternative API diagnostics
+name: Temporary Piped instance sweep
 
 on:
   push:
@@ -8,20 +8,33 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Diagnose Piped and Invidious
+      - name: Test remaining current Piped instances
         shell: bash
         run: |
           set +e
           ID="_IVxbL4JkE8"
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153 Safari/537.36"
-          for URL in             "https://pipedapi.kavin.rocks/streams/$ID"             "https://pipedapi.leptons.xyz/streams/$ID"             "https://api.piped.private.coffee/streams/$ID"             "https://pipedapi.ducks.party/streams/$ID"             "https://inv.nadeko.net/api/v1/videos/$ID"             "https://yt.chocolatemoo53.com/api/v1/videos/$ID"             "https://invidious.tiekoetter.com/api/v1/videos/$ID"; do
-            echo "===== $URL ====="
+          for BASE in \
+            "https://pipedapi-libre.kavin.rocks" \
+            "https://piped-api.privacy.com.de" \
+            "https://pipedapi.adminforge.de" \
+            "https://api.piped.yt" \
+            "https://pipedapi.drgns.space" \
+            "https://pipedapi.owo.si" \
+            "https://piped-api.codespace.cz" \
+            "https://pipedapi.darkness.services" \
+            "https://pipedapi.orangenet.cc"; do
+            echo "===== $BASE ====="
             TMP="$(mktemp)"
-            CODE="$(curl -L -A "$UA" -sS --max-time 15 -o "$TMP" -w "%{http_code}" "$URL" 2>&1)"
+            CODE="$(curl -L -A "$UA" -sS --max-time 12 -o "$TMP" -w "%{http_code}" "$BASE/streams/$ID" 2>/dev/null)"
             echo "status=$CODE bytes=$(wc -c < "$TMP")"
-            head -c 300 "$TMP" | tr '\n' ' '; echo
+            if [ "$CODE" = "200" ]; then
+              jq -r '"title=" + (.title // "null") + " audioStreams=" + ((.audioStreams // [])|length|tostring)' "$TMP" 2>/dev/null
+            else
+              head -c 180 "$TMP" | tr '\n' ' '; echo
+            fi
             rm -f "$TMP"
           done
           exit 0
