@@ -1,4 +1,4 @@
-name: Temporary build compact permitted audio files
+name: Temporary inspect En Libertad RSS
 
 on:
   push:
@@ -6,59 +6,32 @@ on:
       - ".github/workflows/temp-youtube-audio-20260923.yml"
 
 jobs:
-  build:
+  inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
     steps:
-      - name: Install ffmpeg
-        shell: bash
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg
-
-      - name: Download matching podcast audio sources
+      - name: Inspect RSS enclosures
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p src out
-          curl -LfsS --retry 3 --retry-delay 2 \
-            "https://www.ivoox.com/informes-del-cni-dejan-al-descubierto-al_mf_180328233_feed_1.mp3?d=1788981014" \
-            -o src/01.mp3
-          curl -LfsS --retry 3 --retry-delay 2 \
-            "https://www.ivoox.com/traicion-del-gobierno-al-pueblo-espanol_mf_180381816_feed_1.mp3?d=1789067318" \
-            -o src/02.mp3
-          curl -LfsS --retry 3 --retry-delay 2 \
-            "https://www.ivoox.com/junta-electoral-tumba-plan-sanchez_mf_180552857_feed_1.mp3?d=1789413067" \
-            -o src/03.mp3
-          ls -lh src
-
-      - name: Convert to compact M4A AAC mono 72 kbps
-        shell: bash
-        run: |
-          set -euo pipefail
-          ffmpeg -hide_banner -loglevel error -y -i src/01.mp3 -vn -ac 1 -ar 44100 -c:a aac -b:a 72k \
-            -metadata title="Los informes del CNI dejan al descubierto al Gobierno" \
-            -metadata artist="En Libertad / ViOne" \
-            -movflags +faststart "out/01_Los_informes_del_CNI.m4a"
-          ffmpeg -hide_banner -loglevel error -y -i src/02.mp3 -vn -ac 1 -ar 44100 -c:a aac -b:a 72k \
-            -metadata title="La traición del Gobierno al pueblo español" \
-            -metadata artist="En Libertad / ViOne" \
-            -movflags +faststart "out/02_La_traicion_del_Gobierno.m4a"
-          ffmpeg -hide_banner -loglevel error -y -i src/03.mp3 -vn -ac 1 -ar 44100 -c:a aac -b:a 72k \
-            -metadata title="La Junta Electoral tumba el plan de Sánchez" \
-            -metadata artist="En Libertad / ViOne" \
-            -movflags +faststart "out/03_La_Junta_Electoral_tumba_el_plan_de_Sanchez.m4a"
-          echo "=== OUTPUT ==="
-          ls -lh out
-          for f in out/*.m4a; do
-            ffprobe -v error -show_entries format=filename,duration,size,bit_rate -of compact=p=0:nk=0 "$f"
-          done
-
-      - name: Upload audio files
-        uses: actions/upload-artifact@v4
-        with:
-          name: compact-m4a-audios
-          path: out/*.m4a
-          retention-days: 1
-          compression-level: 0
-          if-no-files-found: error
+          curl -LfsS --retry 3 "https://feeds.ivoox.com/feed_fg_f1781509_filtro_1.xml" -o feed.xml
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          root=ET.parse("feed.xml").getroot()
+          needles=[
+              "Los informes del CNI dejan al descubierto al Gobierno",
+              "La traición del Gobierno al pueblo español",
+              "La Junta Electoral tumba el plan de Sánchez",
+          ]
+          for item in root.findall(".//item"):
+              title=(item.findtext("title") or "").strip()
+              if any(n.lower() in title.lower() for n in needles):
+                  enc=item.find("enclosure")
+                  print("TITLE:", title)
+                  print("GUID:", (item.findtext("guid") or "").strip())
+                  print("PUB:", (item.findtext("pubDate") or "").strip())
+                  print("ENC:", enc.attrib.get("url") if enc is not None else "")
+                  print("LEN:", enc.attrib.get("length") if enc is not None else "")
+                  print("TYPE:", enc.attrib.get("type") if enc is not None else "")
+                  print("---")
+          PY
