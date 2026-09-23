@@ -1,4 +1,4 @@
-name: Temporary Piped instance sweep
+name: Temporary YouTube client sweep
 
 on:
   push:
@@ -10,31 +10,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - name: Test remaining current Piped instances
+      - name: Install yt-dlp
+        shell: bash
+        run: |
+          curl -fsSL https://deno.land/install.sh | sh
+          python -m pip install -U "yt-dlp[default]"
+
+      - name: Sweep YouTube clients
         shell: bash
         run: |
           set +e
-          ID="_IVxbL4JkE8"
-          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153 Safari/537.36"
-          for BASE in \
-            "https://pipedapi-libre.kavin.rocks" \
-            "https://piped-api.privacy.com.de" \
-            "https://pipedapi.adminforge.de" \
-            "https://api.piped.yt" \
-            "https://pipedapi.drgns.space" \
-            "https://pipedapi.owo.si" \
-            "https://piped-api.codespace.cz" \
-            "https://pipedapi.darkness.services" \
-            "https://pipedapi.orangenet.cc"; do
-            echo "===== $BASE ====="
-            TMP="$(mktemp)"
-            CODE="$(curl -L -A "$UA" -sS --max-time 12 -o "$TMP" -w "%{http_code}" "$BASE/streams/$ID" 2>/dev/null)"
-            echo "status=$CODE bytes=$(wc -c < "$TMP")"
-            if [ "$CODE" = "200" ]; then
-              jq -r '"title=" + (.title // "null") + " audioStreams=" + ((.audioStreams // [])|length|tostring)' "$TMP" 2>/dev/null
-            else
-              head -c 180 "$TMP" | tr '\n' ' '; echo
-            fi
-            rm -f "$TMP"
+          URL="https://www.youtube.com/watch?v=_IVxbL4JkE8"
+          for CLIENT in tv_simply tv_downgraded tv ios ios_music android android_music android_vr web_safari mweb web_music web_embedded tv_embedded; do
+            echo "===== $CLIENT ====="
+            OUT="$(yt-dlp --js-runtimes "deno:$HOME/.deno/bin/deno" \
+              --extractor-args "youtube:player_client=$CLIENT;player_skip=webpage,configs" \
+              --no-playlist --simulate --print '%(id)s|%(title)s|%(format_id)s|%(acodec)s' "$URL" 2>&1)"
+            RC=$?
+            echo "exit=$RC"
+            echo "$OUT" | tail -n 4
           done
           exit 0
