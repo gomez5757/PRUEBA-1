@@ -1,4 +1,4 @@
-name: Temporary Loader download header check
+name: Temporary Loader primary response check
 
 on:
   push:
@@ -10,16 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Inspect download URL headers
+      - name: Inspect first response without following redirects
         shell: bash
         run: |
-          set +e
-          for U in \
-            "https://aiden90.savenow.to/pacific/?qIM7f1yFJ49k9p5MPn7Vey3" \
-            "https://179-43-156-194.nip.io/pacific/?qIM7f1yFJ49k9p5MPn7Vey3" \
-            "https://179-43-156-194.sslip.io/pacific/?qIM7f1yFJ49k9p5MPn7Vey3" \
-            "http://179-43-156-194.traefik.me/pacific/?qIM7f1yFJ49k9p5MPn7Vey3"; do
-            echo "===== $U ====="
-            curl -ksSIL --max-time 30 -A 'Mozilla/5.0' -e 'https://loader.to/' "$U" | grep -Ei 'HTTP/|content-type|content-length|content-disposition|location' | tail -20
-          done
-          exit 0
+          U="https://aiden90.savenow.to/pacific/?qIM7f1yFJ49k9p5MPn7Vey3"
+          curl -ksS -D - -o /tmp/body --max-time 30 \
+            -A 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36' \
+            -e 'https://loader.to/' "$U"
+          echo "BODY_SIZE=$(stat -c %s /tmp/body)"
