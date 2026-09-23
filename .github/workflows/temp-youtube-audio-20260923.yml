@@ -1,4 +1,4 @@
-name: Temporary Loader.to audio download
+name: Temporary Loader progress check
 
 on:
   push:
@@ -6,88 +6,11 @@ on:
       - ".github/workflows/temp-youtube-audio-20260923.yml"
 
 jobs:
-  download:
+  check:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
     steps:
-      - name: Install ffmpeg
+      - name: Check completed conversion
         shell: bash
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg
-
-      - name: Download 3 permitted YouTube audios via public Loader.to API
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p out
-
-          request_loader() {
-            local video_url="$1"
-            local encoded
-            encoded="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$video_url")"
-            local api="https://loader.to/api/download?url=$encoded&add_info=1&format=m4a"
-
-            local body=""
-            body="$(curl -LfsS --connect-timeout 10 --max-time 45 "$api" 2>/dev/null || true)"
-            if ! printf '%s' "$body" | jq -e . >/dev/null 2>&1; then
-              body="$(curl -LfsS --connect-timeout 10 --max-time 45 \
-                --resolve loader.to:443:172.67.198.191 "$api" 2>/dev/null || true)"
-            fi
-            printf '%s' "$body"
-          }
-
-          urls=(
-            "https://www.youtube.com/watch?v=_IVxbL4JkE8"
-            "https://www.youtube.com/watch?v=FIZolwe-9Ow"
-            "https://www.youtube.com/watch?v=81SmjsXtQel"
-          )
-
-          n=0
-          for URL in "${urls[@]}"; do
-            n=$((n+1))
-            echo "=== Starting $n ==="
-            INFO="$(request_loader "$URL")"
-            echo "$INFO" | jq .
-
-            ID="$(echo "$INFO" | jq -r '.id // empty')"
-            PROGRESS="$(echo "$INFO" | jq -r '.progress_url // empty')"
-            TITLE="$(echo "$INFO" | jq -r '.additional_info.title // .info.title // empty')"
-            [ -n "$ID" ] || { echo "No worker id returned"; exit 1; }
-            [ -n "$PROGRESS" ] || PROGRESS="https://p.savenow.to/api/progress?id=$ID"
-
-            DL=""
-            for i in $(seq 1 120); do
-              P="$(curl -LfsS --connect-timeout 10 --max-time 30 "$PROGRESS" 2>/dev/null || true)"
-              SUCCESS="$(printf '%s' "$P" | jq -r '.success // 0' 2>/dev/null || echo 0)"
-              DL="$(printf '%s' "$P" | jq -r '.download_url // .download // empty' 2>/dev/null || true)"
-              PROG="$(printf '%s' "$P" | jq -r '.progress // empty' 2>/dev/null || true)"
-              echo "poll $i success=$SUCCESS progress=$PROG"
-              if [ "$SUCCESS" = "1" ] || [ "$SUCCESS" = "true" ]; then
-                [ -n "$DL" ] && break
-              fi
-              sleep 2
-            done
-            [ -n "$DL" ] || { echo "Conversion did not return download URL"; exit 1; }
-
-            SAFE="$(printf '%s' "$TITLE" | tr '/\\:*?"<>|' '_' | tr -d '\r\n')"
-            [ -n "$SAFE" ] || SAFE="audio_$n"
-            curl -LfsS --connect-timeout 15 --max-time 240 "$DL" -o "/tmp/source-$n"
-
-            # AAC/M4A at 96 kbps: compact on a phone while retaining good listening quality.
-            ffmpeg -hide_banner -loglevel error -y -i "/tmp/source-$n" -vn \
-              -c:a aac -b:a 96k -movflags +faststart \
-              "out/$(printf '%02d' "$n")_${SAFE}.m4a"
-          done
-
-          echo "=== Final files ==="
-          ls -lh out
-
-      - name: Upload M4A files
-        uses: actions/upload-artifact@v4
-        with:
-          name: youtube-audio-m4a-96k
-          path: out/*.m4a
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
+          curl -LfsS "https://lto2.affadaffa.com/api/progress?id=qIM7f1yFJ49k9p5MPn7Vey3" | jq .
