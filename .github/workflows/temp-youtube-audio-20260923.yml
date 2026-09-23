@@ -1,4 +1,4 @@
-name: Temporary Loader primary response check
+name: Temporary OmegaTech endpoint discovery
 
 on:
   push:
@@ -6,15 +6,27 @@ on:
       - ".github/workflows/temp-youtube-audio-20260923.yml"
 
 jobs:
-  check:
+  discover:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Inspect first response without following redirects
+      - name: Find YouTube downloader endpoint in public docs assets
         shell: bash
         run: |
-          U="https://aiden90.savenow.to/pacific/?qIM7f1yFJ49k9p5MPn7Vey3"
-          curl -ksS -D - -o /tmp/body --max-time 30 \
-            -A 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36' \
-            -e 'https://loader.to/' "$U"
-          echo "BODY_SIZE=$(stat -c %s /tmp/body)"
+          set -euo pipefail
+          BASE="https://api.omegatech.app"
+          curl -LfsS "$BASE/api.html" -o /tmp/api.html
+          echo "=== script assets ==="
+          grep -Eo '<script[^>]+src="[^"]+"' /tmp/api.html | sed -E 's/.*src="([^"]+)".*/\1/' | tee /tmp/scripts.txt || true
+          while read -r S; do
+            [ -n "$S" ] || continue
+            case "$S" in
+              http*) U="$S" ;;
+              /*) U="$BASE$S" ;;
+              *) U="$BASE/$S" ;;
+            esac
+            echo "=== $U ==="
+            curl -LfsS --max-time 30 "$U" 2>/dev/null | grep -Eio '.{0,120}(youtube|ytmp3|mp3|downloader).{0,220}' | head -80 || true
+          done < /tmp/scripts.txt
+          echo "=== html matches ==="
+          grep -Eio '.{0,120}(youtube|ytmp3|mp3|downloader).{0,220}' /tmp/api.html | head -100 || true
