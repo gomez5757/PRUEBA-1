@@ -1,0 +1,71 @@
+name: ChatGPT temp decode iVoox Nuxt media fields
+
+on:
+  push:
+    paths:
+      - ".github/workflows/chatgpt_audio_extract_20260923_1742.yml"
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Decode Nuxt variable mapping
+        shell: bash
+        run: |
+          set -euo pipefail
+          U="https://www.ivoox.com/informes-del-cni-dejan-al-descubierto-al-audios-mp3_rf_180328233_1.html"
+          curl -LfsS --max-time 30 -A 'Mozilla/5.0' "$U" -o page.html
+          python - <<'PY'
+          import re
+          s=open("page.html",errors="ignore").read()
+          start=s.find("window.__NUXT__=")
+          if start<0:
+              start=s.find("__NUXT__=")
+          end=s.find("</script>", start)
+          js=s[start:end]
+          m=re.search(r'function\(([^)]*)\)\{return',js)
+          if not m:
+              print("NO_FUNCTION")
+              raise SystemExit
+          params=[x.strip() for x in m.group(1).split(",")]
+          trans=js.rfind("}(")
+          if trans<0:
+              print("NO_CALL")
+              raise SystemExit
+          args_text=js[trans+2:]
+          while args_text and args_text[-1] in ";)":
+              args_text=args_text[:-1]
+
+          def split_top(text):
+              out=[]; st=0; quote=None; esc=False; stack=[]
+              opens="([{"
+              closes=")]}"
+              for i,ch in enumerate(text):
+                  if quote:
+                      if esc: esc=False
+                      elif ch=="\\": esc=True
+                      elif ch==quote: quote=None
+                      continue
+                  if ch in ("'", '"', "`"):
+                      quote=ch; continue
+                  if ch in opens:
+                      stack.append(ch); continue
+                  if ch in closes:
+                      if stack: stack.pop()
+                      continue
+                  if ch=="," and not stack:
+                      out.append(text[st:i].strip()); st=i+1
+              out.append(text[st:].strip())
+              return out
+          args=split_top(args_text)
+          print("PARAMS",len(params),"ARGS",len(args))
+          mapping={p:args[i] if i<len(args) else "<MISSING>" for i,p in enumerate(params)}
+          for fld in ["mediaUrl","downloadUrl","duration","tritonStation","audioPaid","isSample","id","status"]:
+              mm=re.search(r'\b'+re.escape(fld)+r':([A-Za-z_$][A-Za-z0-9_$]*)',js)
+              if mm:
+                  v=mm.group(1)
+                  print(f"{fld} VAR={v} ARG={mapping.get(v,'<NO_MAP>')[:4000]}")
+              else:
+                  print(f"{fld} NO_VAR")
+          PY
