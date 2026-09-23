@@ -1,4 +1,4 @@
-name: Temporary Cobalt YouTube audio test
+name: Temporary Piped instance sweep
 
 on:
   push:
@@ -6,64 +6,35 @@ on:
       - ".github/workflows/temp-youtube-audio-20260923.yml"
 
 jobs:
-  test:
+  sweep:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 12
     steps:
-      - name: Start YouTube session generator
+      - name: Sweep current Piped instances
         shell: bash
         run: |
-          set -euo pipefail
-          docker network create cobalt-net
-          docker run -d --rm --name yt-session-generator --network cobalt-net \
-            ghcr.io/imputnet/yt-session-generator:webserver
-          echo "waiting for session token..."
-          for i in $(seq 1 90); do
-            if docker run --rm --network cobalt-net curlimages/curl:8.12.1 \
-              -fsS http://yt-session-generator:8080/token > /tmp/token.json 2>/dev/null; then
-              cat /tmp/token.json
-              exit 0
+          set +e
+          ID="_IVxbL4JkE8"
+          for BASE in \
+            "https://pipedapi-libre.kavin.rocks" \
+            "https://piped-api.privacy.com.de" \
+            "https://pipedapi.adminforge.de" \
+            "https://api.piped.yt" \
+            "https://pipedapi.drgns.space" \
+            "https://pipedapi.owo.si" \
+            "https://piped-api.codespace.cz" \
+            "https://pipedapi.darkness.services" \
+            "https://pipedapi.orangenet.cc" \
+            "https://pipedapi.12a.app" \
+            "https://api.piped.minionflo.net" \
+            "https://pipedapi.nezumi.party"; do
+            echo "===== $BASE ====="
+            BODY="$(curl -A 'Mozilla/5.0' -LfsS --connect-timeout 6 --max-time 18 "$BASE/streams/$ID" 2>/dev/null)"
+            RC=$?
+            echo "curl=$RC bytes=${#BODY}"
+            if [ $RC -eq 0 ] && [ -n "$BODY" ]; then
+              echo "$BODY" | jq -r '"title=" + (.title // "null") + " audios=" + ((.audioStreams // [])|length|tostring) + " error=" + (.message // .error // "")'
+              echo "$BODY" | jq -r '(.audioStreams // []) | sort_by(.bitrate) | reverse | .[:3][]? | "AUDIO bitrate=" + (.bitrate|tostring) + " mime=" + (.mimeType // "") + " url=" + (.url // "")'
             fi
-            sleep 2
           done
-          docker logs yt-session-generator || true
-          exit 1
-
-      - name: Start Cobalt
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker run -d --rm --name cobalt --network cobalt-net \
-            -p 9000:9000 \
-            -e API_URL="http://127.0.0.1:9000/" \
-            -e YOUTUBE_SESSION_SERVER="http://yt-session-generator:8080/token" \
-            -e YOUTUBE_SESSION_INNERTUBE_CLIENT="WEB_EMBEDDED" \
-            ghcr.io/imputnet/cobalt:11
-          for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:9000/ >/tmp/cobalt-health.json 2>/dev/null; then
-              cat /tmp/cobalt-health.json
-              exit 0
-            fi
-            sleep 2
-          done
-          docker logs cobalt || true
-          exit 1
-
-      - name: Request first audio
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fsS -X POST http://127.0.0.1:9000/ \
-            -H 'Accept: application/json' \
-            -H 'Content-Type: application/json' \
-            --data '{"url":"https://youtu.be/_IVxbL4JkE8","downloadMode":"audio","audioFormat":"best","audioBitrate":"96","filenameStyle":"basic"}' \
-            | tee /tmp/result.json
-          echo
-          jq . /tmp/result.json
-
-      - name: Diagnostics
-        if: always()
-        shell: bash
-        run: |
-          docker logs --tail 200 cobalt 2>&1 || true
-          docker logs --tail 200 yt-session-generator 2>&1 || true
+          exit 0
