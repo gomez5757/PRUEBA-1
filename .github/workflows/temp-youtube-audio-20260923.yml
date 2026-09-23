@@ -1,4 +1,4 @@
-name: Temporary OmegaTech downloader tests
+name: Temporary final audio download
 
 on:
   push:
@@ -6,31 +6,72 @@ on:
       - ".github/workflows/temp-youtube-audio-20260923.yml"
 
 jobs:
-  test:
+  download:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 25
     steps:
-      - name: Test public YouTube audio endpoints
+      - name: Install ffmpeg
         shell: bash
         run: |
-          set +e
-          URL="https://youtu.be/_IVxbL4JkE8"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
 
-          echo "=== YouTube action=audio ==="
-          curl -LsS --connect-timeout 8 --max-time 35 --get "https://api.omegatech.app/api/download/YouTube" \
-            --data-urlencode "action=audio" --data-urlencode "url=$URL" \
-            -w '\nHTTP=%{http_code}\n' | head -c 12000
-          echo
+      - name: Download and convert 3 permitted videos to compact M4A
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          urls=(
+            "https://youtu.be/_IVxbL4JkE8"
+            "https://youtu.be/FIZolwe-9Ow"
+            "https://youtu.be/81SmjsXtQel"
+          )
 
-          echo "=== SaveTube action=download 128kbps ==="
-          curl -LsS --connect-timeout 8 --max-time 35 --get "https://api.omegatech.app/api/download/savefrom" \
-            --data-urlencode "action=download" --data-urlencode "url=$URL" \
-            --data-urlencode "quality=128kbps" -w '\nHTTP=%{http_code}\n' | head -c 12000
-          echo
+          n=0
+          for URL in "${urls[@]}"; do
+            n=$((n+1))
+            echo "=== $n / 3 ==="
 
-          echo "=== Yt-mate action=info ==="
-          curl -LsS --connect-timeout 8 --max-time 35 --get "https://api.omegatech.app/api/download/Yt-mate" \
-            --data-urlencode "action=info" --data-urlencode "url=$URL" \
-            -w '\nHTTP=%{http_code}\n' | head -c 12000
-          echo
-          exit 0
+            META="$(curl -LfsS --connect-timeout 10 --max-time 90 --get \
+              "https://api.omegatech.app/api/download/savefrom" \
+              --data-urlencode "action=download" \
+              --data-urlencode "url=$URL" \
+              --data-urlencode "quality=128kbps")"
+
+            echo "$META" | jq '{success,statusCode,title:.data.title,duration:.data.duration,audioUrl:.data.audioUrl}'
+            SUCCESS="$(echo "$META" | jq -r '.success // false')"
+            AUDIO="$(echo "$META" | jq -r '.data.audioUrl // empty')"
+            TITLE="$(echo "$META" | jq -r '.data.title // empty')"
+
+            [ "$SUCCESS" = "true" ] || { echo "Downloader failed"; exit 1; }
+            [ -n "$AUDIO" ] || { echo "Missing audio URL"; exit 1; }
+
+            SAFE="$(printf '%s' "$TITLE" | tr '/\\:*?"<>|' '_' | tr -d '\r\n' | cut -c1-120)"
+            [ -n "$SAFE" ] || SAFE="audio_$n"
+
+            echo "Downloading source audio..."
+            curl -LfsS --connect-timeout 15 --max-time 300 \
+              -A 'Mozilla/5.0' "$AUDIO" -o "/tmp/source-$n.mp3"
+            file "/tmp/source-$n.mp3"
+            ls -lh "/tmp/source-$n.mp3"
+
+            echo "Encoding AAC/M4A 96 kbps..."
+            ffmpeg -hide_banner -loglevel error -y -i "/tmp/source-$n.mp3" -vn \
+              -map_metadata 0 -c:a aac -b:a 96k -movflags +faststart \
+              "out/$(printf '%02d' "$n")_${SAFE}.m4a"
+
+            ffprobe -v error -show_entries format=duration,size:stream=codec_name,bit_rate \
+              -of json "out/$(printf '%02d' "$n")_${SAFE}.m4a"
+          done
+
+          echo "=== Finished ==="
+          ls -lh out
+
+      - name: Upload the three M4A files
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-audio-m4a-96k
+          path: out/*.m4a
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
