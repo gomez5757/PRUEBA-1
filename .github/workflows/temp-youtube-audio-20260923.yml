@@ -1,4 +1,4 @@
-name: Temporary YouTube audio download
+name: Temporary YouTube extraction test
 
 on:
   push:
@@ -6,38 +6,26 @@ on:
       - ".github/workflows/temp-youtube-audio-20260923.yml"
 
 jobs:
-  download:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
-      - name: Install Deno, ffmpeg and yt-dlp
+      - name: Install yt-dlp and Deno
         shell: bash
         run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg curl unzip
           curl -fsSL https://deno.land/install.sh | sh
           python -m pip install -U "yt-dlp[default]"
-          "$HOME/.deno/bin/deno" --version
-          yt-dlp --version
 
-      - name: Download audio and convert to compact M4A
+      - name: Test anonymous YouTube clients
         shell: bash
         run: |
-          set -euo pipefail
-          mkdir -p out
-          yt-dlp --js-runtimes "deno:$HOME/.deno/bin/deno" --no-playlist -x --audio-format m4a --audio-quality 96K --embed-metadata \
-            -o "out/01_%(title).120B.%(ext)s" "https://youtu.be/_IVxbL4JkE8"
-          yt-dlp --js-runtimes "deno:$HOME/.deno/bin/deno" --no-playlist -x --audio-format m4a --audio-quality 96K --embed-metadata \
-            -o "out/02_%(title).120B.%(ext)s" "https://youtu.be/FIZolwe-9Ow"
-          yt-dlp --js-runtimes "deno:$HOME/.deno/bin/deno" --no-playlist -x --audio-format m4a --audio-quality 96K --embed-metadata \
-            -o "out/03_%(title).120B.%(ext)s" "https://youtu.be/81SmjsXtQel"
-
-      - name: Upload audio files
-        uses: actions/upload-artifact@v4
-        with:
-          name: youtube-audio-m4a-96k
-          path: out/*.m4a
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
+          set +e
+          URL="https://youtu.be/_IVxbL4JkE8"
+          for CLIENT in android_vr web_safari web_embedded tv; do
+            echo "===== CLIENT $CLIENT ====="
+            yt-dlp --js-runtimes "deno:$HOME/.deno/bin/deno" \
+              --extractor-args "youtube:player_client=$CLIENT;player_skip=webpage,configs" \
+              --no-playlist -F "$URL"
+            echo "EXIT=$?"
+          done
+          exit 0
