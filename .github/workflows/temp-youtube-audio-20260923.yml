@@ -1,4 +1,4 @@
-name: Temporary YouTube extraction with PO token
+name: Temporary YouTube browser-token test
 
 on:
   push:
@@ -15,16 +15,15 @@ jobs:
         run: |
           set -e
           curl -fsSL https://deno.land/install.sh | sh
-          python -m pip install -U "yt-dlp[default]" bgutil-ytdlp-pot-provider
-          docker run -d --rm --name bgutil-provider -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider:latest
-          sleep 4
-          docker logs bgutil-provider || true
+          python -m pip install -U "yt-dlp[default]" yt-dlp-getpot-wpc
+          command -v google-chrome || command -v chromium || true
+          command -v xvfb-run || true
 
-      - name: Test first video
+      - name: Test first video with browser PO token
         shell: bash
         run: |
-          yt-dlp -v --js-runtimes "deno:$HOME/.deno/bin/deno" \
-            --extractor-args "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416" \
-            --extractor-args "youtube:player_client=mweb;player_skip=webpage,configs" \
+          CHROME="$(command -v google-chrome || command -v chromium)"
+          xvfb-run -a yt-dlp -v --js-runtimes "deno:$HOME/.deno/bin/deno" \
+            --extractor-args "youtubepot-wpc:browser_path=$CHROME" \
+            --extractor-args "youtube:player_client=mweb" \
             --no-playlist -F "https://www.youtube.com/watch?v=_IVxbL4JkE8"
-          docker logs bgutil-provider || true
