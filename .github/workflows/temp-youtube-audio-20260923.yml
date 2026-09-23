@@ -1,4 +1,4 @@
-name: Temporary YouTube metadata lookup
+name: Temporary YouTube thumbnail lookup
 
 on:
   push:
@@ -6,17 +6,23 @@ on:
       - ".github/workflows/temp-youtube-audio-20260923.yml"
 
 jobs:
-  test:
+  thumbs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Get oEmbed metadata
+      - name: Download thumbnails
         shell: bash
         run: |
-          set +e
-          for ID in "_IVxbL4JkE8" "FIZolwe-9Ow" "81SmjsXtQel"; do
-            echo "===== $ID ====="
-            curl -LfsS --max-time 15 "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=$ID&format=json" | jq -r '"title=" + .title + " | author=" + .author_name'
-            echo "exit=$?"
-          done
-          exit 0
+          set -e
+          mkdir thumbs
+          curl -LfsS "https://i.ytimg.com/vi/_IVxbL4JkE8/hqdefault.jpg" -o thumbs/1.jpg
+          curl -LfsS "https://i.ytimg.com/vi/FIZolwe-9Ow/hqdefault.jpg" -o thumbs/2.jpg
+          curl -LfsS "https://i.ytimg.com/vi/81SmjsXtQel/hqdefault.jpg" -o thumbs/3.jpg
+          file thumbs/*
+          ls -lh thumbs
+      - name: Upload thumbnails
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-thumbnails
+          path: thumbs/*.jpg
+          retention-days: 1
