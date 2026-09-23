@@ -1,4 +1,4 @@
-name: Temporary alternate source test
+name: Temporary direct SaveTube fallback
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - ".github/workflows/temp-youtube-audio-20260923.yml"
 
 jobs:
-  test:
+  audio:
     strategy:
       fail-fast: false
       matrix:
@@ -16,19 +16,127 @@ jobs:
           - idx: "03"
             url: "https://youtu.be/81SmjsXtQel"
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
-      - name: Test OmegaTech yt-dl 144p
+      - name: Install ffmpeg
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+
+      - name: Resolve direct SaveTube audio URL
         shell: bash
         env:
           VIDEO_URL: ${{ matrix.url }}
         run: |
-          set +e
-          curl -LsS --connect-timeout 8 --max-time 50 --get \
-            "https://api.omegatech.app/api/download/yt-dl" \
-            --data-urlencode "action=download" \
-            --data-urlencode "url=$VIDEO_URL" \
-            --data-urlencode "quality=144p" \
-            -w '\nHTTP=%{http_code}\n' | head -c 20000
-          echo
-          exit 0
+          set -euo pipefail
+          cat > /tmp/savetube.js <<'NODE'
+          const crypto = require('crypto');
+          const fs = require('fs');
+
+          const videoUrl = process.env.VIDEO_URL;
+          const key = Buffer.from('C5D58EF67A7584E4A29F6C35BBC4EB12', 'hex');
+          const headers = {
+            'content-type': 'application/json',
+            'origin': 'https://ytsave.savetube.me',
+            'referer': 'https://ytsave.savetube.me/',
+            'user-agent': 'Mozilla/5.0'
+          };
+
+          function decrypt(enc) {
+            const b = Buffer.from(String(enc).replace(/\s/g, ''), 'base64');
+            const iv = b.subarray(0, 16);
+            const data = b.subarray(16);
+            const d = crypto.createDecipheriv('aes-128-cbc', key, iv);
+            return JSON.parse(Buffer.concat([d.update(data), d.final()]).toString());
+          }
+
+          async function main() {
+            let cdnResponse = await fetch('https://media.savetube.me/api/random-cdn', {
+              headers: {'user-agent': 'Mozilla/5.0'}
+            });
+            if (!cdnResponse.ok) throw new Error('random-cdn HTTP ' + cdnResponse.status);
+            const cdnJson = await cdnResponse.json();
+            const cdn = cdnJson.cdn;
+            if (!cdn) throw new Error('No CDN returned');
+            console.log('CDN=' + cdn);
+
+            let infoResponse = await fetch('https://' + cdn + '/v2/info', {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({url: videoUrl})
+            });
+            if (!infoResponse.ok) throw new Error('info HTTP ' + infoResponse.status);
+            const info = await infoResponse.json();
+            if (!info?.status || !info?.data) throw new Error('Info failed: ' + JSON.stringify(info).slice(0,500));
+            const meta = decrypt(info.data);
+
+            let dlResponse = await fetch('https://' + cdn + '/download', {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                id: meta.id,
+                key: meta.key,
+                downloadType: 'audio',
+                quality: '128'
+              })
+            });
+            if (!dlResponse.ok) throw new Error('download HTTP ' + dlResponse.status);
+            const dl = await dlResponse.json();
+            const downloadUrl = dl?.data?.downloadUrl;
+            if (!downloadUrl) throw new Error('No download URL: ' + JSON.stringify(dl).slice(0,500));
+
+            const out = {
+              title: meta.title || 'audio',
+              duration: meta.duration || null,
+              downloadUrl
+            };
+            fs.writeFileSync('/tmp/meta.json', JSON.stringify(out));
+            console.log(JSON.stringify({title: out.title, duration: out.duration, ok: true}));
+          }
+
+          main().catch(e => {
+            console.error(e.stack || e.message || String(e));
+            process.exit(1);
+          });
+          NODE
+
+          for attempt in 1 2 3 4; do
+            echo "SaveTube attempt $attempt/4"
+            if timeout 90s node /tmp/savetube.js; then
+              exit 0
+            fi
+            sleep $((attempt * 3))
+          done
+          exit 1
+
+      - name: Download and encode compact M4A
+        shell: bash
+        env:
+          IDX: ${{ matrix.idx }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          AUDIO="$(jq -r '.downloadUrl' /tmp/meta.json)"
+          TITLE="$(jq -r '.title // "audio"' /tmp/meta.json)"
+          SAFE="$(printf '%s' "$TITLE" | tr '/\\:*?"<>|' '_' | tr -d '\r\n' | cut -c1-120)"
+          curl -LfsS --retry 5 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 15 --max-time 420 -A 'Mozilla/5.0' \
+            "$AUDIO" -o "/tmp/source-$IDX"
+          file "/tmp/source-$IDX"
+          ls -lh "/tmp/source-$IDX"
+          OUT="out/${IDX}_${SAFE}.m4a"
+          ffmpeg -hide_banner -loglevel error -y -i "/tmp/source-$IDX" -vn \
+            -map_metadata 0 -c:a aac -b:a 96k -movflags +faststart "$OUT"
+          ffprobe -v error -show_entries format=duration,size:stream=codec_name,bit_rate \
+            -of json "$OUT"
+          ls -lh "$OUT"
+
+      - name: Upload M4A
+        uses: actions/upload-artifact@v4
+        with:
+          name: audio-${{ matrix.idx }}-fallback
+          path: out/*.m4a
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
