@@ -1,4 +1,4 @@
-name: Temporary YouTube thumbnail lookup
+name: Temporary YouTube ID disambiguation
 
 on:
   push:
@@ -6,23 +6,33 @@ on:
       - ".github/workflows/temp-youtube-audio-20260923.yml"
 
 jobs:
-  thumbs:
+  test:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Download thumbnails
+      - name: Test visually ambiguous YouTube IDs
         shell: bash
         run: |
-          set -e
-          mkdir thumbs
-          curl -LfsS "https://i.ytimg.com/vi/_IVxbL4JkE8/hqdefault.jpg" -o thumbs/1.jpg
-          curl -LfsS "https://i.ytimg.com/vi/FIZolwe-9Ow/hqdefault.jpg" -o thumbs/2.jpg
-          curl -LfsS "https://i.ytimg.com/vi/81SmjsXtQel/hqdefault.jpg" -o thumbs/3.jpg
-          file thumbs/*
-          ls -lh thumbs
-      - name: Upload thumbnails
-        uses: actions/upload-artifact@v4
-        with:
-          name: youtube-thumbnails
-          path: thumbs/*.jpg
-          retention-days: 1
+          set +e
+          IDS=(
+            "FIZolwe-9Ow"
+            "FIZoIwe-9Ow"
+            "FlZolwe-9Ow"
+            "FlZoIwe-9Ow"
+            "FIZolwe-90w"
+            "FIZoIwe-90w"
+            "FlZolwe-90w"
+            "FlZoIwe-90w"
+            "81SmjsXtQel"
+            "81SmjsXtQeI"
+          )
+          for ID in "${IDS[@]}"; do
+            BODY="$(curl -LsS --max-time 10 -w '\nHTTP=%{http_code}' "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=$ID&format=json")"
+            CODE="$(printf '%s' "$BODY" | tail -n1 | sed 's/HTTP=//')"
+            JSON="$(printf '%s' "$BODY" | sed '$d')"
+            echo "===== $ID HTTP=$CODE ====="
+            if [ "$CODE" = "200" ]; then
+              printf '%s' "$JSON" | jq -r '"title=" + .title + " | author=" + .author_name'
+            fi
+          done
+          exit 0
