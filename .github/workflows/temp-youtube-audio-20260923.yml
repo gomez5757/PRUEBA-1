@@ -1,4 +1,4 @@
-name: Temporary final parallel audio download
+name: Temporary alternate source test
 
 on:
   push:
@@ -6,86 +6,29 @@ on:
       - ".github/workflows/temp-youtube-audio-20260923.yml"
 
 jobs:
-  audio:
+  test:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - idx: "01"
-            url: "https://youtu.be/_IVxbL4JkE8"
           - idx: "02"
             url: "https://youtu.be/FIZolwe-9Ow"
           - idx: "03"
             url: "https://youtu.be/81SmjsXtQel"
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 5
     steps:
-      - name: Install ffmpeg
-        shell: bash
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg
-
-      - name: Fetch source audio with retries
+      - name: Test OmegaTech yt-dl 144p
         shell: bash
         env:
           VIDEO_URL: ${{ matrix.url }}
-          IDX: ${{ matrix.idx }}
         run: |
-          set -euo pipefail
-          mkdir -p out
-          OK=0
-          for attempt in $(seq 1 6); do
-            echo "API attempt $attempt/6"
-            CODE="$(curl -LsS --connect-timeout 10 --max-time 75 --get \
-              "https://api.omegatech.app/api/download/savefrom" \
-              --data-urlencode "action=download" \
-              --data-urlencode "url=$VIDEO_URL" \
-              --data-urlencode "quality=128kbps" \
-              -o /tmp/meta.json -w '%{http_code}' || true)"
-            echo "HTTP=$CODE"
-            if [ "$CODE" = "200" ] && jq -e '.success == true and (.data.audioUrl|type=="string")' /tmp/meta.json >/dev/null 2>&1; then
-              OK=1
-              break
-            fi
-            cat /tmp/meta.json 2>/dev/null | head -c 2000 || true
-            echo
-            sleep $((attempt * 3))
-          done
-          [ "$OK" = "1" ] || { echo "Downloader failed after retries"; exit 1; }
-
-          jq '{success,statusCode,title:.data.title,duration:.data.duration,audioUrl:.data.audioUrl}' /tmp/meta.json
-          AUDIO="$(jq -r '.data.audioUrl' /tmp/meta.json)"
-          TITLE="$(jq -r '.data.title // empty' /tmp/meta.json)"
-          SAFE="$(printf '%s' "$TITLE" | tr '/\\:*?"<>|' '_' | tr -d '\r\n' | cut -c1-120)"
-          [ -n "$SAFE" ] || SAFE="audio_$IDX"
-          printf '%s' "$SAFE" > /tmp/title.txt
-
-          curl -LfsS --retry 5 --retry-all-errors --retry-delay 3 \
-            --connect-timeout 15 --max-time 420 -A 'Mozilla/5.0' \
-            "$AUDIO" -o "/tmp/source-$IDX.mp3"
-          file "/tmp/source-$IDX.mp3"
-          ls -lh "/tmp/source-$IDX.mp3"
-
-      - name: Encode compact M4A at 96 kbps
-        shell: bash
-        env:
-          IDX: ${{ matrix.idx }}
-        run: |
-          set -euo pipefail
-          SAFE="$(cat /tmp/title.txt)"
-          OUT="out/${IDX}_${SAFE}.m4a"
-          ffmpeg -hide_banner -loglevel error -y -i "/tmp/source-$IDX.mp3" -vn \
-            -map_metadata 0 -c:a aac -b:a 96k -movflags +faststart "$OUT"
-          ffprobe -v error -show_entries format=duration,size:stream=codec_name,bit_rate \
-            -of json "$OUT"
-          ls -lh "$OUT"
-
-      - name: Upload M4A
-        uses: actions/upload-artifact@v4
-        with:
-          name: audio-${{ matrix.idx }}
-          path: out/*.m4a
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
+          set +e
+          curl -LsS --connect-timeout 8 --max-time 50 --get \
+            "https://api.omegatech.app/api/download/yt-dl" \
+            --data-urlencode "action=download" \
+            --data-urlencode "url=$VIDEO_URL" \
+            --data-urlencode "quality=144p" \
+            -w '\nHTTP=%{http_code}\n' | head -c 20000
+          echo
+          exit 0
