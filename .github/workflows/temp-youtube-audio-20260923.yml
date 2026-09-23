@@ -17,19 +17,19 @@ jobs:
           URL="https://youtu.be/_IVxbL4JkE8"
 
           echo "=== YouTube action=audio ==="
-          curl -LsS --get "https://api.omegatech.app/api/download/YouTube" \
+          curl -LsS --connect-timeout 8 --max-time 35 --get "https://api.omegatech.app/api/download/YouTube" \
             --data-urlencode "action=audio" --data-urlencode "url=$URL" \
             -w '\nHTTP=%{http_code}\n' | head -c 12000
           echo
 
           echo "=== SaveTube action=download 128kbps ==="
-          curl -LsS --get "https://api.omegatech.app/api/download/savefrom" \
+          curl -LsS --connect-timeout 8 --max-time 35 --get "https://api.omegatech.app/api/download/savefrom" \
             --data-urlencode "action=download" --data-urlencode "url=$URL" \
             --data-urlencode "quality=128kbps" -w '\nHTTP=%{http_code}\n' | head -c 12000
           echo
 
           echo "=== Yt-mate action=info ==="
-          curl -LsS --get "https://api.omegatech.app/api/download/Yt-mate" \
+          curl -LsS --connect-timeout 8 --max-time 35 --get "https://api.omegatech.app/api/download/Yt-mate" \
             --data-urlencode "action=info" --data-urlencode "url=$URL" \
             -w '\nHTTP=%{http_code}\n' | head -c 12000
           echo
