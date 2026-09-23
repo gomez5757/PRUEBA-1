@@ -1,4 +1,4 @@
-name: Temporary YouTube client sweep
+name: Temporary YouTube metadata lookup
 
 on:
   push:
@@ -8,26 +8,15 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
-      - name: Install yt-dlp
-        shell: bash
-        run: |
-          curl -fsSL https://deno.land/install.sh | sh
-          python -m pip install -U "yt-dlp[default]"
-
-      - name: Sweep YouTube clients
+      - name: Get oEmbed metadata
         shell: bash
         run: |
           set +e
-          URL="https://www.youtube.com/watch?v=_IVxbL4JkE8"
-          for CLIENT in tv_simply tv_downgraded tv ios ios_music android android_music android_vr web_safari mweb web_music web_embedded tv_embedded; do
-            echo "===== $CLIENT ====="
-            OUT="$(yt-dlp --js-runtimes "deno:$HOME/.deno/bin/deno" \
-              --extractor-args "youtube:player_client=$CLIENT;player_skip=webpage,configs" \
-              --no-playlist --simulate --print '%(id)s|%(title)s|%(format_id)s|%(acodec)s' "$URL" 2>&1)"
-            RC=$?
-            echo "exit=$RC"
-            echo "$OUT" | tail -n 4
+          for ID in "_IVxbL4JkE8" "FIZolwe-9Ow" "81SmjsXtQel"; do
+            echo "===== $ID ====="
+            curl -LfsS --max-time 15 "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=$ID&format=json" | jq -r '"title=" + .title + " | author=" + .author_name'
+            echo "exit=$?"
           done
           exit 0
