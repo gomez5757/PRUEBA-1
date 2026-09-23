@@ -1,4 +1,4 @@
-name: Temporary YouTube extraction test
+name: Temporary YouTube extraction with PO token
 
 on:
   push:
@@ -10,22 +10,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Install yt-dlp and Deno
+      - name: Install tools
         shell: bash
         run: |
+          set -e
           curl -fsSL https://deno.land/install.sh | sh
-          python -m pip install -U "yt-dlp[default]"
+          python -m pip install -U "yt-dlp[default]" bgutil-ytdlp-pot-provider
+          docker run -d --rm --name bgutil-provider -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider:latest
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4416/ >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:4416/ | head -c 500 || true
 
-      - name: Test anonymous YouTube clients
+      - name: Test first video
         shell: bash
         run: |
-          set +e
-          URL="https://youtu.be/_IVxbL4JkE8"
-          for CLIENT in android_vr web_safari web_embedded tv; do
-            echo "===== CLIENT $CLIENT ====="
-            yt-dlp --js-runtimes "deno:$HOME/.deno/bin/deno" \
-              --extractor-args "youtube:player_client=$CLIENT;player_skip=webpage,configs" \
-              --no-playlist -F "$URL"
-            echo "EXIT=$?"
-          done
-          exit 0
+          yt-dlp -v --js-runtimes "deno:$HOME/.deno/bin/deno" \
+            --extractor-args "youtube:player_client=mweb" \
+            --no-playlist -F "https://www.youtube.com/watch?v=_IVxbL4JkE8"
