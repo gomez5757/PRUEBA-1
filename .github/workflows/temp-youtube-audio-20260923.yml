@@ -1,4 +1,4 @@
-name: Temporary Piped instance sweep
+name: Temporary Cobalt community instance sweep
 
 on:
   push:
@@ -6,35 +6,82 @@ on:
       - ".github/workflows/temp-youtube-audio-20260923.yml"
 
 jobs:
-  sweep:
+  download:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     steps:
-      - name: Sweep current Piped instances
+      - name: Find a working Cobalt community instance
         shell: bash
         run: |
-          set +e
-          ID="_IVxbL4JkE8"
-          for BASE in \
-            "https://pipedapi-libre.kavin.rocks" \
-            "https://piped-api.privacy.com.de" \
-            "https://pipedapi.adminforge.de" \
-            "https://api.piped.yt" \
-            "https://pipedapi.drgns.space" \
-            "https://pipedapi.owo.si" \
-            "https://piped-api.codespace.cz" \
-            "https://pipedapi.darkness.services" \
-            "https://pipedapi.orangenet.cc" \
-            "https://pipedapi.12a.app" \
-            "https://api.piped.minionflo.net" \
-            "https://pipedapi.nezumi.party"; do
-            echo "===== $BASE ====="
-            BODY="$(curl -A 'Mozilla/5.0' -LfsS --connect-timeout 6 --max-time 18 "$BASE/streams/$ID" 2>/dev/null)"
-            RC=$?
-            echo "curl=$RC bytes=${#BODY}"
-            if [ $RC -eq 0 ] && [ -n "$BODY" ]; then
-              echo "$BODY" | jq -r '"title=" + (.title // "null") + " audios=" + ((.audioStreams // [])|length|tostring) + " error=" + (.message // .error // "")'
-              echo "$BODY" | jq -r '(.audioStreams // []) | sort_by(.bitrate) | reverse | .[:3][]? | "AUDIO bitrate=" + (.bitrate|tostring) + " mime=" + (.mimeType // "") + " url=" + (.url // "")'
+          set -euo pipefail
+          curl -LfsS --max-time 20 https://instances.cobalt.best/api/instances.json -o /tmp/instances.json
+          echo "online instances:"
+          jq -r '.[] | select(.online.api == true) | [.name, .api, .version, (.score|tostring)] | @tsv' /tmp/instances.json | head -40
+
+          URL="https://youtu.be/_IVxbL4JkE8"
+          : > /tmp/winner
+          jq -r '.[] | select(.online.api == true) | .api' /tmp/instances.json | head -40 | while read -r API; do
+            [ -n "$API" ] || continue
+            echo "===== TEST $API ====="
+            BODY="$(curl -LfsS --connect-timeout 5 --max-time 15 -X POST "$API/" \
+              -H 'Accept: application/json' -H 'Content-Type: application/json' \
+              --data "{"url":"$URL","downloadMode":"audio","audioFormat":"best","filenameStyle":"basic"}" 2>/dev/null || true)"
+            STATUS="$(printf '%s' "$BODY" | jq -r '.status // empty' 2>/dev/null || true)"
+            CODE="$(printf '%s' "$BODY" | jq -r '.error.code // empty' 2>/dev/null || true)"
+            echo "status=$STATUS error=$CODE bytes=${#BODY}"
+            if [ "$STATUS" = "redirect" ] || [ "$STATUS" = "tunnel" ]; then
+              echo "$API" > /tmp/winner
+              printf '%s' "$BODY" > /tmp/first-result.json
+              break
             fi
           done
-          exit 0
+
+          API="$(cat /tmp/winner)"
+          if [ -z "$API" ]; then
+            echo "No working anonymous Cobalt instance found"
+            exit 1
+          fi
+          echo "WINNER=$API"
+          echo "COBALT_API=$API" >> "$GITHUB_ENV"
+
+      - name: Download 3 audios and convert to compact M4A
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          urls=(
+            "https://youtu.be/_IVxbL4JkE8"
+            "https://youtu.be/FIZolwe-9Ow"
+            "https://youtu.be/81SmjsXtQel"
+          )
+          n=0
+          for URL in "${urls[@]}"; do
+            n=$((n+1))
+            echo "processing $n: $URL"
+            BODY="$(curl -LfsS --connect-timeout 8 --max-time 40 -X POST "$COBALT_API/" \
+              -H 'Accept: application/json' -H 'Content-Type: application/json' \
+              --data "{"url":"$URL","downloadMode":"audio","audioFormat":"best","filenameStyle":"basic"}")"
+            echo "$BODY" | jq .
+            STATUS="$(echo "$BODY" | jq -r '.status')"
+            DL="$(echo "$BODY" | jq -r '.url // empty')"
+            TITLE="$(echo "$BODY" | jq -r '.filename // empty' | sed 's/[[:cntrl:]\/\\:*?"<>|]/_/g')"
+            if [ "$STATUS" != "redirect" ] && [ "$STATUS" != "tunnel" ]; then
+              echo "unexpected status: $STATUS"
+              exit 1
+            fi
+            [ -n "$DL" ] || { echo "missing download URL"; exit 1; }
+            curl -LfsS --connect-timeout 10 --max-time 180 "$DL" -o "/tmp/source-$n"
+            if [ -z "$TITLE" ]; then TITLE="audio_$n"; fi
+            BASE="${TITLE%.*}"
+            ffmpeg -hide_banner -loglevel error -y -i "/tmp/source-$n" -vn -c:a aac -b:a 96k -movflags +faststart "out/$(printf '%02d' "$n")_${BASE}.m4a"
+          done
+          ls -lh out
+
+      - name: Upload M4A files
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-audio-m4a-96k
+          path: out/*.m4a
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
