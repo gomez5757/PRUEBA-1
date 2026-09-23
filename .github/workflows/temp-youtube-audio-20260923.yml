@@ -1,4 +1,4 @@
-name: Temporary Cobalt community instance sweep
+name: Temporary Cobalt direct instance sweep
 
 on:
   push:
@@ -10,21 +10,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Find a working Cobalt community instance
+      - name: Find a working Cobalt instance
         shell: bash
         run: |
           set -euo pipefail
-          curl -kLfsS --max-time 20 https://instances.cobalt.best/api/instances.json -o /tmp/instances.json
-          echo "online instances:"
-          jq -r '.[] | select(.online.api == true) | [.name, .api, .version, (.score|tostring)] | @tsv' /tmp/instances.json | head -40 || true
-
           URL="https://youtu.be/_IVxbL4JkE8"
           : > /tmp/winner
-          while read -r API; do
-            [ -n "$API" ] || continue
+          for API in \
+            "https://cobalt-api.meowing.de" \
+            "https://cobalt-backend.canine.tools" \
+            "https://capi.3kh0.net" \
+            "https://cobalt-api.kwiatekmiki.com" \
+            "https://kityune.imput.net" \
+            "https://nachos.imput.net" \
+            "https://sunny.imput.net" \
+            "https://blossom.imput.net"; do
             echo "===== TEST $API ====="
+            curl -kLfsS --connect-timeout 5 --max-time 10 "$API/" | head -c 400 || true
+            echo
             PAYLOAD="$(jq -nc --arg u "$URL" '{url:$u,downloadMode:"audio",audioFormat:"best",filenameStyle:"basic"}')"
-            BODY="$(curl -kLfsS --connect-timeout 5 --max-time 15 -X POST "$API/" \
+            BODY="$(curl -kLsS --connect-timeout 5 --max-time 25 -X POST "$API/" \
               -H 'Accept: application/json' -H 'Content-Type: application/json' \
               --data "$PAYLOAD" 2>/dev/null || true)"
             STATUS="$(printf '%s' "$BODY" | jq -r '.status // empty' 2>/dev/null || true)"
@@ -32,20 +37,15 @@ jobs:
             echo "status=$STATUS error=$CODE bytes=${#BODY}"
             if [ "$STATUS" = "redirect" ] || [ "$STATUS" = "tunnel" ]; then
               echo "$API" > /tmp/winner
-              printf '%s' "$BODY" > /tmp/first-result.json
               break
             fi
-          done < <(jq -r '.[] | select(.online.api == true) | .api' /tmp/instances.json | head -40)
-
+          done
           API="$(cat /tmp/winner)"
-          if [ -z "$API" ]; then
-            echo "No working anonymous Cobalt instance found"
-            exit 1
-          fi
+          [ -n "$API" ] || { echo "No working instance"; exit 1; }
           echo "WINNER=$API"
           echo "COBALT_API=$API" >> "$GITHUB_ENV"
 
-      - name: Download 3 audios and convert to compact M4A
+      - name: Download and convert all 3
         shell: bash
         run: |
           set -euo pipefail
@@ -58,23 +58,20 @@ jobs:
           n=0
           for URL in "${urls[@]}"; do
             n=$((n+1))
-            echo "processing $n: $URL"
             PAYLOAD="$(jq -nc --arg u "$URL" '{url:$u,downloadMode:"audio",audioFormat:"best",filenameStyle:"basic"}')"
-            BODY="$(curl -kLfsS --connect-timeout 8 --max-time 40 -X POST "$COBALT_API/" \
+            BODY="$(curl -kLfsS --connect-timeout 8 --max-time 45 -X POST "$COBALT_API/" \
               -H 'Accept: application/json' -H 'Content-Type: application/json' \
               --data "$PAYLOAD")"
             echo "$BODY" | jq .
             STATUS="$(echo "$BODY" | jq -r '.status')"
             DL="$(echo "$BODY" | jq -r '.url // empty')"
-            TITLE="$(echo "$BODY" | jq -r '.filename // empty' | sed 's/[[:cntrl:]\/\\:*?"<>|]/_/g')"
-            if [ "$STATUS" != "redirect" ] && [ "$STATUS" != "tunnel" ]; then
-              echo "unexpected status: $STATUS"
-              exit 1
-            fi
-            [ -n "$DL" ] || { echo "missing download URL"; exit 1; }
+            NAME="$(echo "$BODY" | jq -r '.filename // empty')"
+            [ "$STATUS" = "redirect" ] || [ "$STATUS" = "tunnel" ] || exit 1
+            [ -n "$DL" ] || exit 1
             curl -kLfsS --connect-timeout 10 --max-time 180 "$DL" -o "/tmp/source-$n"
-            if [ -z "$TITLE" ]; then TITLE="audio_$n"; fi
-            BASE="${TITLE%.*}"
+            SAFE="$(printf '%s' "$NAME" | tr '/\\:*?"<>|' '_' | tr -d '\r\n')"
+            [ -n "$SAFE" ] || SAFE="audio_$n"
+            BASE="${SAFE%.*}"
             ffmpeg -hide_banner -loglevel error -y -i "/tmp/source-$n" -vn -c:a aac -b:a 96k -movflags +faststart "out/$(printf '%02d' "$n")_${BASE}.m4a"
           done
           ls -lh out
