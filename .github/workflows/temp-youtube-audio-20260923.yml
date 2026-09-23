@@ -1,4 +1,4 @@
-name: Temporary inspect iVoox enclosure delivery
+name: Temporary inspect podcast mirrors
 
 on:
   push:
@@ -8,23 +8,43 @@ on:
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 6
     steps:
-      - name: Inspect redirects and range headers
+      - name: Inspect raw pages for media URLs
         shell: bash
         run: |
           set -euo pipefail
-          URL='https://www.ivoox.com/informes-del-cni-dejan-al-descubierto-al_mf_180328233_feed_1.mp3?d=1788981014'
-          for UA in \
-            'curl/8.5.0' \
-            'PodcastAddict/v2026 Android' \
-            'AntennaPod/3.8.0' \
-            'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/153 Mobile Safari/537.36'; do
-            echo "===== UA: $UA ====="
-            rm -f headers part.bin
-            curl -L -sS --max-time 30 -A "$UA" -r 0-1023 -D headers -o part.bin \
-              -w 'HTTP=%{http_code} EFFECTIVE=%{url_effective} SIZE=%{size_download} TYPE=%{content_type}\n' "$URL"
-            echo "--- final/interesting headers ---"
-            grep -Ei '^(HTTP/|location:|content-length:|content-range:|accept-ranges:|content-type:)' headers | tail -n 20 || true
-            echo "part_size=$(wc -c < part.bin)"
+          URLS=(
+            "https://zeno.fm/podcast/en-libertad-wwin0z/episodes/la-junta-electoral-tumba-el-plan-de-sanchez/"
+            "https://podsearch.io/episodes/la-junta-electoral-tumba-el-plan-de-sanchez"
+            "https://www.podscan.fm/podcasts/en-libertad/episodes/la-junta-electoral-tumba-el-plan-de-sanchez-1"
+          )
+          n=0
+          for U in "${URLS[@]}"; do
+            n=$((n+1))
+            echo "===== PAGE $n $U ====="
+            curl -LfsS --max-time 30 -A 'Mozilla/5.0' "$U" -o "p$n.html" || true
+            echo "bytes=$(wc -c < "p$n.html")"
+            python - "$n" <<'PY'
+          import re,sys,html
+          n=sys.argv[1]
+          s=open(f"p{n}.html",errors="ignore").read()
+          s=html.unescape(s)
+          pats=[
+              r'https?://[^"\'<> ]+\.mp3[^"\'<> ]*',
+              r'https?://[^"\'<> ]+\.m4a[^"\'<> ]*',
+              r'https?://[^"\'<> ]+\.m3u8[^"\'<> ]*',
+              r'https?://[^"\'<> ]+(?:audio|stream)[^"\'<> ]*',
+          ]
+          seen=[]
+          for pat in pats:
+              for m in re.findall(pat,s,re.I):
+                  if m not in seen:
+                      seen.append(m)
+          for m in seen[:50]:
+              print("MEDIA:",m[:1000])
+          for key in ["audioUrl","audio_url","streamUrl","stream_url","enclosure","episodeUrl","downloadUrl","mediaUrl","media_url"]:
+              if key.lower() in s.lower():
+                  print("HASKEY:",key)
+          PY
           done
