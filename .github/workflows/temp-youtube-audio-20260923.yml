@@ -1,4 +1,4 @@
-name: Temporary inspect iVoox episode page
+name: Temporary Cobalt YouTube audio test
 
 on:
   push:
@@ -6,37 +6,64 @@ on:
       - ".github/workflows/temp-youtube-audio-20260923.yml"
 
 jobs:
-  inspect:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
-      - name: Inspect iVoox raw HTML
+      - name: Start YouTube session generator
         shell: bash
         run: |
           set -euo pipefail
-          U="https://www.ivoox.com/informes-del-cni-dejan-al-descubierto-al-audios-mp3_rf_180328233_1.html"
-          curl -LfsS --max-time 30 -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153 Safari/537.36' "$U" -o page.html
-          echo "bytes=$(wc -c < page.html)"
-          python - <<'PY'
-          import re,html
-          s=html.unescape(open("page.html",errors="ignore").read())
-          for key in ["audio","mp3","m3u8","triton","preview","mediaUrl","player","duration","180328233"]:
-              print("KEY",key,"count",s.lower().count(key.lower()))
-          # URLs that look media-ish
-          urls=[]
-          for m in re.findall(r'https?://[^"\'<>\\ ]+',s):
-              if any(k in m.lower() for k in ('.mp3','.m4a','.m3u8','triton','audio','stream','player')):
-                  if m not in urls: urls.append(m)
-          for u in urls[:100]:
-              print("URL:",u[:1600])
-          # snippets around likely keys
-          for key in ["180328233","preview","triton","audioUrl","mediaUrl","playerData","stream"]:
-              pos=0
-              cnt=0
-              low=s.lower(); kk=key.lower()
-              while True:
-                  i=low.find(kk,pos)
-                  if i<0 or cnt>=8: break
-                  print("SNIP",key,":",re.sub(r'\s+',' ',s[max(0,i-350):i+1000])[:1400])
-                  pos=i+len(kk); cnt+=1
-          PY
+          docker network create cobalt-net
+          docker run -d --rm --name yt-session-generator --network cobalt-net \
+            ghcr.io/imputnet/yt-session-generator:webserver
+          echo "waiting for session token..."
+          for i in $(seq 1 90); do
+            if docker run --rm --network cobalt-net curlimages/curl:8.12.1 \
+              -fsS http://yt-session-generator:8080/token > /tmp/token.json 2>/dev/null; then
+              cat /tmp/token.json
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs yt-session-generator || true
+          exit 1
+
+      - name: Start Cobalt
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --rm --name cobalt --network cobalt-net \
+            -p 9000:9000 \
+            -e API_URL="http://127.0.0.1:9000/" \
+            -e YOUTUBE_SESSION_SERVER="http://yt-session-generator:8080/token" \
+            -e YOUTUBE_SESSION_INNERTUBE_CLIENT="WEB_EMBEDDED" \
+            ghcr.io/imputnet/cobalt:11
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:9000/ >/tmp/cobalt-health.json 2>/dev/null; then
+              cat /tmp/cobalt-health.json
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs cobalt || true
+          exit 1
+
+      - name: Request first audio
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST http://127.0.0.1:9000/ \
+            -H 'Accept: application/json' \
+            -H 'Content-Type: application/json' \
+            --data '{"url":"https://youtu.be/_IVxbL4JkE8","downloadMode":"audio","audioFormat":"best","audioBitrate":"96","filenameStyle":"basic"}' \
+            | tee /tmp/result.json
+          echo
+          jq . /tmp/result.json
+
+      - name: Diagnostics
+        if: always()
+        shell: bash
+        run: |
+          docker logs --tail 200 cobalt 2>&1 || true
+          docker logs --tail 200 yt-session-generator 2>&1 || true
