@@ -1,4 +1,4 @@
-name: Temporary YouTube browser-token test
+name: Temporary alternative YouTube frontend test
 
 on:
   push:
@@ -10,20 +10,40 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Install tools
+      - name: Test Piped and Invidious public APIs
         shell: bash
         run: |
-          set -e
-          curl -fsSL https://deno.land/install.sh | sh
-          python -m pip install -U "yt-dlp[default]" yt-dlp-getpot-wpc
-          command -v google-chrome || command -v chromium || true
-          command -v xvfb-run || true
+          set +e
+          ID="_IVxbL4JkE8"
+          for BASE in \
+            "https://pipedapi.kavin.rocks" \
+            "https://pipedapi.leptons.xyz" \
+            "https://pipedapi.nosebs.ru" \
+            "https://api-piped.mha.fi" \
+            "https://piped-api.garudalinux.org" \
+            "https://api.piped.private.coffee" \
+            "https://pipedapi.ducks.party" \
+            "https://pipedapi.reallyaweso.me"; do
+            echo "===== PIPED $BASE ====="
+            BODY="$(curl -LfsS --max-time 20 "$BASE/streams/$ID" 2>/dev/null)"
+            RC=$?
+            echo "curl=$RC bytes=${#BODY}"
+            if [ $RC -eq 0 ] && [ -n "$BODY" ]; then
+              echo "$BODY" | jq -r '"title=" + (.title // "null") + " audioStreams=" + ((.audioStreams // [])|length|tostring) + " msg=" + (.message // .error // "")' 2>/dev/null
+            fi
+          done
 
-      - name: Test first video with browser PO token
-        shell: bash
-        run: |
-          CHROME="$(command -v google-chrome || command -v chromium)"
-          xvfb-run -a yt-dlp -v --js-runtimes "deno:$HOME/.deno/bin/deno" \
-            --extractor-args "youtubepot-wpc:browser_path=$CHROME" \
-            --extractor-args "youtube:player_client=mweb" \
-            --no-playlist -F "https://www.youtube.com/watch?v=_IVxbL4JkE8"
+          for BASE in \
+            "https://inv.nadeko.net" \
+            "https://invidious.nerdvpn.de" \
+            "https://yt.chocolatemoo53.com" \
+            "https://invidious.tiekoetter.com"; do
+            echo "===== INVIDIOUS $BASE ====="
+            BODY="$(curl -LfsS --max-time 20 "$BASE/api/v1/videos/$ID" 2>/dev/null)"
+            RC=$?
+            echo "curl=$RC bytes=${#BODY}"
+            if [ $RC -eq 0 ] && [ -n "$BODY" ]; then
+              echo "$BODY" | jq -r '"title=" + (.title // "null") + " adaptiveFormats=" + ((.adaptiveFormats // [])|length|tostring) + " err=" + (.error // "")' 2>/dev/null
+            fi
+          done
+          exit 0
