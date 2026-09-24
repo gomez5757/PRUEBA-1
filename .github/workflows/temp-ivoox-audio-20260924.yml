@@ -1,4 +1,4 @@
-name: Temporary test full iVoox download URL
+name: Temporary inspect live iVoox player
 
 on:
   push:
@@ -8,25 +8,91 @@ on:
 permissions: {}
 
 jobs:
-  test:
+  inspect:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Resolve and inspect full audio download
+      - name: Inspect hydrated player and network
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg >/tmp/install.log 2>&1
-          ID='180381816'
-          API="https://vcore-web.ivoox.com/v1/public/audios/$ID/download-url"
-          J="$(curl -LfsS -H 'Accept: application/json' -H 'Origin: https://www.ivoox.com' -H 'Referer: https://www.ivoox.com/' -A 'Mozilla/5.0' "$API")"
-          echo "$J"
-          REL="$(echo "$J" | jq -r '.data.downloadUrl')"
-          U="https://www.ivoox.com$REL"
-          echo "URL=$U"
-          curl -LsSI --connect-timeout 10 --max-time 30 -A 'Mozilla/5.0' "$U" | grep -Ei 'HTTP/|content-type|content-length|content-disposition|location' | tail -30 || true
-          curl -LfsS --retry 3 --retry-all-errors --connect-timeout 15 --max-time 420 -A 'Mozilla/5.0' "$U" -o /tmp/full.mp3
-          file /tmp/full.mp3
-          ls -lh /tmp/full.mp3
-          ffprobe -v error -show_entries format=duration,size:stream=codec_name,codec_type,bit_rate -of json /tmp/full.mp3
+          mkdir -p /tmp/browser
+          cd /tmp/browser
+          npm init -y >/dev/null 2>&1
+          npm install puppeteer-core@latest >/dev/null 2>&1
+          cat >inspect.js <<'NODE'
+          const puppeteer = require('puppeteer-core');
+
+          (async () => {
+            const browser = await puppeteer.launch({
+              executablePath: '/usr/bin/google-chrome',
+              headless: true,
+              args: ['--no-sandbox','--disable-dev-shm-usage','--autoplay-policy=no-user-gesture-required']
+            });
+            const page = await browser.newPage();
+            await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36');
+
+            const interesting = /ivoox|listen_|\.mp3|audio|stream|triton|media/i;
+            page.on('request', req => {
+              if (interesting.test(req.url())) console.log('REQ', req.method(), req.resourceType(), req.url());
+            });
+            page.on('response', res => {
+              if (interesting.test(res.url())) {
+                const h = res.headers();
+                console.log('RES', res.status(), res.request().resourceType(), res.url(),
+                  'TYPE='+(h['content-type']||''), 'LEN='+(h['content-length']||''), 'LOC='+(h['location']||''));
+              }
+            });
+            page.on('console', m => console.log('BROWSER', m.type(), m.text()));
+            page.on('pageerror', e => console.log('PAGEERROR', e.message));
+
+            const target = 'https://www.ivoox.com/en/traicion-del-gobierno-al-pueblo-espanol-audios-mp3_rf_180381816_1.html';
+            await page.goto(target, {waitUntil:'networkidle2', timeout:90000});
+            await new Promise(r => setTimeout(r, 5000));
+
+            const state = await page.evaluate(() => {
+              const n = window.$nuxt;
+              const item = n && n.$componentRouter && n.$componentRouter.state && n.$componentRouter.state.item;
+              return {
+                nuxt: !!n,
+                nuxtKeys: n ? Object.keys(n).filter(k=>/player|audio|resource|component/i.test(k)) : [],
+                hasPlayer: !!(n && n.$player),
+                playerKeys: n && n.$player ? Object.getOwnPropertyNames(Object.getPrototypeOf(n.$player)).concat(Object.keys(n.$player)) : [],
+                item: item ? {id:item.id,title:item.title,duration:item.duration,mediaUrl:item.mediaUrl,downloadUrl:item.downloadUrl} : null,
+                storePlayer: n && n.$store ? n.$store.state.player : null,
+                audioTags: Array.from(document.querySelectorAll('audio')).map(a=>({src:a.src,currentSrc:a.currentSrc,duration:a.duration,paused:a.paused}))
+              };
+            });
+            console.log('STATE', JSON.stringify(state));
+
+            const invoked = await page.evaluate(() => {
+              const n = window.$nuxt;
+              const item = n && n.$componentRouter && n.$componentRouter.state && n.$componentRouter.state.item;
+              if (n && n.$player && item) {
+                try { n.$player.play(item); return 'player.play'; } catch(e) { return 'ERR '+String(e); }
+              }
+              const btn = document.querySelector('button.play-1');
+              if (btn) { btn.click(); return 'button.click'; }
+              return 'none';
+            });
+            console.log('INVOKED', invoked);
+
+            await new Promise(r => setTimeout(r, 20000));
+
+            const after = await page.evaluate(() => {
+              const n = window.$nuxt;
+              return {
+                storePlayer: n && n.$store ? n.$store.state.player : null,
+                audioTags: Array.from(document.querySelectorAll('audio')).map(a=>({
+                  src:a.src,currentSrc:a.currentSrc,duration:a.duration,currentTime:a.currentTime,paused:a.paused,
+                  readyState:a.readyState, networkState:a.networkState,
+                  error:a.error ? {code:a.error.code,message:a.error.message} : null
+                })),
+                resources: performance.getEntriesByType('resource').map(e=>e.name).filter(u=>/listen_|\.mp3|audio|triton|media/i.test(u)).slice(-100)
+              };
+            });
+            console.log('AFTER', JSON.stringify(after));
+            await browser.close();
+          })().catch(e => { console.error(e.stack || e); process.exit(1); });
+          NODE
+          node inspect.js
