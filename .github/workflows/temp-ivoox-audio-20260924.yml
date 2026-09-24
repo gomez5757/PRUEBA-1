@@ -1,4 +1,4 @@
-name: Temporary test iVoox media hosts
+name: Temporary rebuild three complete audios
 
 on:
   push:
@@ -8,31 +8,132 @@ on:
 permissions: {}
 
 jobs:
-  test:
+  audio:
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - idx: "01"
+            episode_id: "180328233"
+            video_id: "_IVxbL4JkE8"
+            expected_seconds: "5222"
+            output_name: "01_Los_informes_del_CNI.m4a"
+          - idx: "02"
+            episode_id: "180381816"
+            video_id: "FIZoIwe-9Ow"
+            expected_seconds: "5932"
+            output_name: "02_La_traicion_del_Gobierno.m4a"
+          - idx: "03"
+            episode_id: "180552857"
+            video_id: "81SmjsXtQeI"
+            expected_seconds: "4941"
+            output_name: "03_La_Junta_Electoral.m4a"
+
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 18
+
     steps:
-      - name: Resolve fresh token and test media hosts
+      - name: Install audio tools
         shell: bash
         run: |
+          sudo apt-get update -qq >/tmp/install.log 2>&1
+          sudo apt-get install -y -qq ffmpeg >>/tmp/install.log 2>&1
+          ffmpeg -version | head -1
+
+      - name: Resolve exact full episode
+        shell: bash
+        env:
+          EPISODE_ID: ${{ matrix.episode_id }}
+          EXPECTED: ${{ matrix.expected_seconds }}
+        run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg >/tmp/install.log 2>&1
-          ID='180381816'
-          META="$(curl -LfsS -H 'Accept: application/json' -H 'Origin: https://www.ivoox.com' -H 'Referer: https://www.ivoox.com/' -A 'Mozilla/5.0' "https://vcore-web.ivoox.com/v1/public/audios/$ID")"
-          DLJ="$(curl -LfsS -H 'Accept: application/json' -H 'Origin: https://www.ivoox.com' -H 'Referer: https://www.ivoox.com/' -A 'Mozilla/5.0' "https://vcore-web.ivoox.com/v1/public/audios/$ID/download-url")"
-          RELD="$(echo "$DLJ" | jq -r '.data.downloadUrl')"
-          RELM="$(echo "$META" | jq -r '.data.mediaUrl')"
-          echo "RELD=$RELD"
-          echo "RELM=$RELM"
-          for HOST in 'https://files.ivoox.com' 'https://www.ivoox.com' 'https://vclassic-web-api.ivoox.com'; do
-            for REL in "$RELD" "$RELM"; do
-              U="$HOST$REL"
-              echo "===== $U ====="
-              curl -sSI --connect-timeout 10 --max-time 30 -A 'Mozilla/5.0'                 -H 'Accept: audio/mpeg,audio/*;q=0.9,*/*;q=0.1'                 -H 'Referer: https://www.ivoox.com/' "$U"                 | grep -Ei 'HTTP/|content-type|content-length|content-disposition|location' | tail -30 || true
-              OUT="/tmp/test-$(echo "$HOST$REL" | sha1sum | cut -d' ' -f1)"
-              curl -fsS --range 0-1048575 --connect-timeout 10 --max-time 30 -A 'Mozilla/5.0'                 -H 'Accept: audio/mpeg,audio/*;q=0.9,*/*;q=0.1'                 -H 'Referer: https://www.ivoox.com/' "$U" -o "$OUT" || true
-              file "$OUT" 2>/dev/null || true
-              stat -c '%s bytes' "$OUT" 2>/dev/null || true
-            done
-          done
+          API="https://vcore-web.ivoox.com/v1/public/audios/$EPISODE_ID"
+          curl -LfsS --connect-timeout 10 --max-time 45             -H 'Accept: application/json, text/plain, */*'             -H 'Origin: https://www.ivoox.com'             -H 'Referer: https://www.ivoox.com/'             -A 'Mozilla/5.0' "$API" -o /tmp/meta.json
+
+          jq '{id:.data.id,title:.data.title,duration:.data.duration,mediaUrl:.data.mediaUrl,audioPaid:.data.audioPaid,isSample:.data.isSample}' /tmp/meta.json
+
+          python3 - <<'PY'
+          import json, os
+          m=json.load(open('/tmp/meta.json'))['data']
+          eid=int(os.environ['EPISODE_ID'])
+          exp=int(os.environ['EXPECTED'])
+          assert m['id']==eid, (m['id'],eid)
+          assert abs(int(m['duration'])-exp)<=1, (m['duration'],exp)
+          assert m.get('audioPaid') is False
+          assert m.get('isSample') is False
+          assert m.get('mediaUrl') == f'/listen_mn_{eid}_1.mp3'
+          print('METADATA_OK', m['title'], m['duration'])
+          PY
+
+      - name: Download full source and verify duration
+        shell: bash
+        env:
+          EPISODE_ID: ${{ matrix.episode_id }}
+          EXPECTED: ${{ matrix.expected_seconds }}
+        run: |
+          set -euo pipefail
+          REL="$(jq -r '.data.mediaUrl' /tmp/meta.json)"
+          SRC="https://www.ivoox.com$REL"
+          echo "SOURCE_ENTRY=$SRC"
+
+          curl -LfsS --retry 5 --retry-all-errors --retry-delay 2             --connect-timeout 15 --max-time 480             -A 'Mozilla/5.0'             -H 'Accept: audio/mpeg,audio/*;q=0.9,*/*;q=0.1'             -H 'Referer: https://www.ivoox.com/'             "$SRC" -o /tmp/source.mp3
+
+          file /tmp/source.mp3
+          ls -lh /tmp/source.mp3
+          ffprobe -v error             -show_entries format=duration,size:stream=codec_name,codec_type,bit_rate,channels,sample_rate             -of json /tmp/source.mp3 | tee /tmp/source-probe.json
+
+          python3 - <<'PY'
+          import json, os
+          p=json.load(open('/tmp/source-probe.json'))
+          d=float(p['format']['duration']); exp=float(os.environ['EXPECTED'])
+          size=int(p['format']['size'])
+          assert abs(d-exp)<3.0, (d,exp)
+          assert size>60_000_000, size
+          assert p['streams'] and p['streams'][0]['codec_type']=='audio'
+          print('SOURCE_OK duration=',d,'size=',size)
+          PY
+
+      - name: Encode compact M4A and verify completely
+        shell: bash
+        env:
+          EXPECTED: ${{ matrix.expected_seconds }}
+          VIDEO_ID: ${{ matrix.video_id }}
+          OUTPUT_NAME: ${{ matrix.output_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          TITLE="$(jq -r '.data.title' /tmp/meta.json)"
+          OUT="out/$OUTPUT_NAME"
+
+          ffmpeg -nostdin -hide_banner -loglevel error -xerror -y             -i /tmp/source.mp3 -map 0:a:0 -vn -map_metadata -1             -ac 1 -ar 48000 -c:a aac -b:a 64k -movflags +faststart             -metadata "title=$TITLE"             -metadata "comment=https://youtu.be/$VIDEO_ID"             "$OUT"
+
+          ffprobe -v error             -show_entries format=duration,size:stream=codec_name,codec_type,bit_rate,channels,sample_rate             -of json "$OUT" | tee /tmp/output-probe.json
+
+          python3 - <<'PY'
+          import json, os
+          p=json.load(open('/tmp/output-probe.json'))
+          d=float(p['format']['duration']); exp=float(os.environ['EXPECTED'])
+          size=int(p['format']['size'])
+          assert abs(d-exp)<3.0, (d,exp)
+          assert len(p['streams'])==1
+          s=p['streams'][0]
+          assert s['codec_name']=='aac' and s['codec_type']=='audio'
+          assert int(s['channels'])==1
+          assert size>25_000_000, size
+          print('OUTPUT_OK duration=',d,'size=',size,'bitrate=',s.get('bit_rate'))
+          PY
+
+          # Decode the entire file, not just its header.
+          ffmpeg -nostdin -v error -xerror -i "$OUT" -map 0:a:0 -f null -
+          sha256sum "$OUT"
+          ls -lh "$OUT"
+
+      - name: Upload verified audio
+        uses: actions/upload-artifact@v4
+        with:
+          name: audio-${{ matrix.idx }}-complete
+          path: out/*.m4a
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
