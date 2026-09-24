@@ -1,4 +1,4 @@
-name: Temporary inspect iVoox player event handler
+name: Temporary test iVoox media hosts
 
 on:
   push:
@@ -8,36 +8,31 @@ on:
 permissions: {}
 
 jobs:
-  inspect:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 10
     steps:
-      - name: Extract player event listeners and media URL construction
+      - name: Resolve fresh token and test media hosts
         shell: bash
         run: |
           set -euo pipefail
-          PAGE='https://www.ivoox.com/en/traicion-del-gobierno-al-pueblo-espanol-audios-mp3_rf_180381816_1.html'
-          curl -LfsS -A 'Mozilla/5.0' "$PAGE" -o /tmp/page.html
-          grep -Eo 'https://static-nweb\.ivoox\.com/[A-Za-z0-9._-]+\.js' /tmp/page.html | sort -u > /tmp/jsurls.txt
-          mkdir -p /tmp/js
-          n=0
-          while read -r U; do
-            n=$((n+1)); curl -LfsS --connect-timeout 8 --max-time 30 "$U" -o "/tmp/js/$n.js" || true
-          done < /tmp/jsurls.txt
-          python3 - <<'PY'
-          import glob,os,re
-          needles=['player:play','player:toggle','mediaUrl','listen_mn_','downloadUrl','new Audio','Audio(']
-          for fn in glob.glob('/tmp/js/*.js'):
-              s=open(fn,encoding='utf-8',errors='ignore').read()
-              for needle in needles:
-                  start=0
-                  while True:
-                      pos=s.find(needle,start)
-                      if pos<0: break
-                      a=max(0,pos-2400); b=min(len(s),pos+6000)
-                      print('===== FILE',os.path.basename(fn),'NEEDLE',needle,'POS',pos,'=====')
-                      print(s[a:b])
-                      print('\n---END---')
-                      start=pos+len(needle)
-                      if start>pos+len(needle)+1: break
-          PY
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg >/tmp/install.log 2>&1
+          ID='180381816'
+          META="$(curl -LfsS -H 'Accept: application/json' -H 'Origin: https://www.ivoox.com' -H 'Referer: https://www.ivoox.com/' -A 'Mozilla/5.0' "https://vcore-web.ivoox.com/v1/public/audios/$ID")"
+          DLJ="$(curl -LfsS -H 'Accept: application/json' -H 'Origin: https://www.ivoox.com' -H 'Referer: https://www.ivoox.com/' -A 'Mozilla/5.0' "https://vcore-web.ivoox.com/v1/public/audios/$ID/download-url")"
+          RELD="$(echo "$DLJ" | jq -r '.data.downloadUrl')"
+          RELM="$(echo "$META" | jq -r '.data.mediaUrl')"
+          echo "RELD=$RELD"
+          echo "RELM=$RELM"
+          for HOST in 'https://files.ivoox.com' 'https://www.ivoox.com' 'https://vclassic-web-api.ivoox.com'; do
+            for REL in "$RELD" "$RELM"; do
+              U="$HOST$REL"
+              echo "===== $U ====="
+              curl -sSI --connect-timeout 10 --max-time 30 -A 'Mozilla/5.0'                 -H 'Accept: audio/mpeg,audio/*;q=0.9,*/*;q=0.1'                 -H 'Referer: https://www.ivoox.com/' "$U"                 | grep -Ei 'HTTP/|content-type|content-length|content-disposition|location' | tail -30 || true
+              OUT="/tmp/test-$(echo "$HOST$REL" | sha1sum | cut -d' ' -f1)"
+              curl -fsS --range 0-1048575 --connect-timeout 10 --max-time 30 -A 'Mozilla/5.0'                 -H 'Accept: audio/mpeg,audio/*;q=0.9,*/*;q=0.1'                 -H 'Referer: https://www.ivoox.com/' "$U" -o "$OUT" || true
+              file "$OUT" 2>/dev/null || true
+              stat -c '%s bytes' "$OUT" 2>/dev/null || true
+            done
+          done
