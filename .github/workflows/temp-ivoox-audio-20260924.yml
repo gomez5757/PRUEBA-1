@@ -1,4 +1,4 @@
-name: Temporary inspect iVoox player implementation
+name: Temporary inspect iVoox player event handler
 
 on:
   push:
@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
-      - name: Extract player class source from public JS
+      - name: Extract player event listeners and media URL construction
         shell: bash
         run: |
           set -euo pipefail
@@ -22,18 +22,22 @@ jobs:
           mkdir -p /tmp/js
           n=0
           while read -r U; do
-            n=$((n+1))
-            curl -LfsS --connect-timeout 8 --max-time 30 "$U" -o "/tmp/js/$n.js" || true
+            n=$((n+1)); curl -LfsS --connect-timeout 8 --max-time 30 "$U" -o "/tmp/js/$n.js" || true
           done < /tmp/jsurls.txt
           python3 - <<'PY'
-          import glob,re,os
+          import glob,os,re
+          needles=['player:play','player:toggle','mediaUrl','listen_mn_','downloadUrl','new Audio','Audio(']
           for fn in glob.glob('/tmp/js/*.js'):
               s=open(fn,encoding='utf-8',errors='ignore').read()
-              for needle in ['key:"play"','key:"toggle"','key:"setAudio"']:
-                  pos=s.find(needle)
-                  if pos>=0:
-                      a=max(0,pos-1800); b=min(len(s),pos+5000)
-                      print('===== FILE',os.path.basename(fn),'NEEDLE',needle,'=====')
+              for needle in needles:
+                  start=0
+                  while True:
+                      pos=s.find(needle,start)
+                      if pos<0: break
+                      a=max(0,pos-2400); b=min(len(s),pos+6000)
+                      print('===== FILE',os.path.basename(fn),'NEEDLE',needle,'POS',pos,'=====')
                       print(s[a:b])
                       print('\n---END---')
+                      start=pos+len(needle)
+                      if start>pos+len(needle)+1: break
           PY
