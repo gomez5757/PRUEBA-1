@@ -1,0 +1,34 @@
+name: Temporary inspect lazy iVoox player chunks
+
+on:
+  push:
+    paths:
+      - ".github/workflows/temp-player-chunks-20260924.yml"
+
+permissions: {}
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Inspect player chunks
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/chunks
+          for NAME in 90ba44a 5019821 2fafdf9 2eb965b; do
+            curl -LfsS "https://static-nweb.ivoox.com/$NAME.js" -o "/tmp/chunks/$NAME.js"
+          done
+          python3 - <<'PY'
+          import glob,re,os
+          for fn in glob.glob('/tmp/chunks/*.js'):
+              s=open(fn,encoding='utf-8',errors='ignore').read()
+              print('FILE',os.path.basename(fn),'SIZE',len(s))
+              for needle in ['player:play','player:toggle','mediaUrl','listen_mn_','downloadUrl']:
+                  for m in list(re.finditer(re.escape(needle),s,re.I))[:8]:
+                      pos=m.start()
+                      print('###',needle,'POS',pos)
+                      print(s[max(0,pos-1800):min(len(s),pos+5000)])
+                      print('---')
+          PY
