@@ -1,4 +1,4 @@
-name: Temporary inspect iVoox web player
+name: Temporary inspect iVoox player internals
 
 on:
   push:
@@ -12,53 +12,35 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Set up Chromium automation
+      - name: Inspect HTML around player controls and JS assets
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq xvfb >/tmp/install.log 2>&1
-          mkdir -p /tmp/browser && cd /tmp/browser
-          npm init -y >/dev/null 2>&1
-          npm install puppeteer-core@latest >/dev/null 2>&1
-          google-chrome --version
-
-      - name: Capture iVoox player network
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat >/tmp/browser/inspect.js <<'NODE'
-          const puppeteer = require('puppeteer-core');
-          const target = 'https://www.ivoox.com/traicion-del-gobierno-al-pueblo-espanol-audios-mp3_rf_180381816_1.html';
-          const interesting = /mp3|audio|triton|cloudfront|play|stream|media|180381816|download/i;
-          (async()=>{
-            const browser=await puppeteer.launch({
-              executablePath:'/usr/bin/google-chrome', headless:false,
-              args:['--no-sandbox','--disable-dev-shm-usage','--window-size=1365,900']
-            });
-            const page=await browser.newPage();
-            await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36');
-            page.on('request', req=>{ if(interesting.test(req.url())) console.log('REQ',req.resourceType(),req.method(),req.url()); });
-            page.on('response', res=>{ if(interesting.test(res.url())) console.log('RES',res.status(),res.request().resourceType(),res.url(),JSON.stringify(res.headers()).slice(0,700)); });
-            await page.goto(target,{waitUntil:'domcontentloaded',timeout:60000});
-            await new Promise(r=>setTimeout(r,7000));
-            console.log('TITLE',await page.title());
-            console.log('AUDIO_TAGS',await page.evaluate(()=>[...document.querySelectorAll('audio')].map(a=>({src:a.src,currentSrc:a.currentSrc,outer:a.outerHTML.slice(0,800)}))));
-            console.log('BUTTONS',await page.evaluate(()=>[...document.querySelectorAll('button,a')].map((e,i)=>({i,txt:(e.innerText||'').trim().slice(0,100),aria:e.getAttribute('aria-label'),title:e.getAttribute('title'),cls:e.className})).filter(x=>/play|reproduc|escuchar/i.test((x.txt||'')+' '+(x.aria||'')+' '+(x.title||''))).slice(0,30)));
-            // Try likely play controls by text/aria/title/classes.
-            const clicked = await page.evaluate(()=>{
-              const all=[...document.querySelectorAll('button,a,[role=button]')];
-              const el=all.find(e=>/play|reproducir|escuchar/i.test(((e.innerText||'')+' '+(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||'')+' '+(e.className||''))));
-              if(el){ el.click(); return {tag:el.tagName,txt:(el.innerText||'').trim(),aria:el.getAttribute('aria-label'),cls:String(el.className)}; }
-              return null;
-            });
-            console.log('CLICKED',clicked);
-            await new Promise(r=>setTimeout(r,12000));
-            console.log('AUDIO_AFTER',await page.evaluate(()=>[...document.querySelectorAll('audio')].map(a=>({src:a.src,currentSrc:a.currentSrc,duration:a.duration,currentTime:a.currentTime,paused:a.paused}))));
-            const entries=await page.evaluate(()=>performance.getEntriesByType('resource').map(e=>e.name).filter(u=>/mp3|audio|triton|cloudfront|stream|180381816/i.test(u)));
-            console.log('PERF',entries.slice(-100));
-            await browser.close();
-          })().catch(e=>{console.error(e.stack||e);process.exit(1)});
-          NODE
-          cd /tmp/browser
-          xvfb-run -a node inspect.js
+          U='https://www.ivoox.com/en/traicion-del-gobierno-al-pueblo-espanol-audios-mp3_rf_180381816_1.html'
+          curl -LfsS --connect-timeout 10 --max-time 45 -A 'Mozilla/5.0' "$U" -o /tmp/page.html
+          echo "HTML_SIZE=$(stat -c %s /tmp/page.html)"
+          echo '=== play button contexts ==='
+          python3 - <<'PY'
+          import re
+          s=open('/tmp/page.html',encoding='utf-8',errors='ignore').read()
+          pats=['play-1','180381816','data-audio','audioUrl','player','podcast-player','mediaUrl']
+          for p in pats:
+              print('\n###',p)
+              for m in list(re.finditer(re.escape(p),s,re.I))[:20]:
+                  a=max(0,m.start()-700); b=min(len(s),m.end()+1400)
+                  print(s[a:b].replace('\n',' ')[:2300])
+                  print('\n---')
+          PY
+          echo '=== script src ==='
+          grep -Eo '<script[^>]+src="[^"]+"' /tmp/page.html | sed -E 's/.*src="([^"]+)".*/\1/' | sort -u | tee /tmp/scripts.txt
+          echo '=== scan scripts for player/audio/API clues ==='
+          while read -r S; do
+            case "$S" in
+              http*) X="$S" ;;
+              //*) X="https:$S" ;;
+              /*) X="https://www.ivoox.com$S" ;;
+              *) X="https://www.ivoox.com/en/$S" ;;
+            esac
+            echo "### $X"
+            curl -LfsS --connect-timeout 8 --max-time 30 -A 'Mozilla/5.0' "$X" 2>/dev/null               | grep -Eio '.{0,160}(180381816|play-1|player|audio|enclosure|media|stream|episode|api/).{0,360}'               | head -120 || true
+          done < /tmp/scripts.txt
