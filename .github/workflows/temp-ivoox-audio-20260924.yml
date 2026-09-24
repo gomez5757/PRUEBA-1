@@ -18,8 +18,8 @@ jobs:
           set +e
           ID='180381816'
           for BASE in             'https://www.ivoox.com'             'https://api.ivoox.com'             'https://api.ivoox.com/v1'             'https://api.ivoox.com/v2'; do
-            for PATH in "/public/audios/$ID" "/public/audios/$ID/download-url"; do
-              U="$BASE$PATH"
+            for PTH in "/public/audios/$ID" "/public/audios/$ID/download-url"; do
+              U="$BASE$PTH"
               echo "===== $U ====="
               curl -LsS --connect-timeout 8 --max-time 30 -A 'Mozilla/5.0'                 -H 'Accept: application/json, text/plain, */*'                 -w '\nHTTP=%{http_code} TYPE=%{content_type}\n' "$U" | head -c 12000
               echo
