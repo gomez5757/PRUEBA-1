@@ -1,4 +1,4 @@
-name: Temporary test actual iVoox vcore audio API
+name: Temporary test full iVoox download URL
 
 on:
   push:
@@ -10,18 +10,23 @@ permissions: {}
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 10
     steps:
-      - name: Query discovered vcore public endpoints
+      - name: Resolve and inspect full audio download
         shell: bash
         run: |
           set -euo pipefail
-          BASE='https://vcore-web.ivoox.com/v1'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg >/tmp/install.log 2>&1
           ID='180381816'
-          for PTH in "/public/audios/$ID" "/public/audios/$ID/download-url"; do
-            U="$BASE$PTH"
-            echo "===== $U ====="
-            curl -LfsS --connect-timeout 8 --max-time 30               -H 'Accept: application/json, text/plain, */*'               -H 'Accept-Language: en'               -H 'Origin: https://www.ivoox.com'               -H 'Referer: https://www.ivoox.com/'               -A 'Mozilla/5.0' "$U" | tee /tmp/resp.json
-            echo
-            jq . /tmp/resp.json 2>/dev/null || true
-          done
+          API="https://vcore-web.ivoox.com/v1/public/audios/$ID/download-url"
+          J="$(curl -LfsS -H 'Accept: application/json' -H 'Origin: https://www.ivoox.com' -H 'Referer: https://www.ivoox.com/' -A 'Mozilla/5.0' "$API")"
+          echo "$J"
+          REL="$(echo "$J" | jq -r '.data.downloadUrl')"
+          U="https://www.ivoox.com$REL"
+          echo "URL=$U"
+          curl -LsSI --connect-timeout 10 --max-time 30 -A 'Mozilla/5.0' "$U" | grep -Ei 'HTTP/|content-type|content-length|content-disposition|location' | tail -30 || true
+          curl -LfsS --retry 3 --retry-all-errors --connect-timeout 15 --max-time 420 -A 'Mozilla/5.0' "$U" -o /tmp/full.mp3
+          file /tmp/full.mp3
+          ls -lh /tmp/full.mp3
+          ffprobe -v error -show_entries format=duration,size:stream=codec_name,codec_type,bit_rate -of json /tmp/full.mp3
