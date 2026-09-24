@@ -1,4 +1,4 @@
-name: Temporary verify iVoox source
+name: Temporary inspect iVoox RSS
 
 on:
   push:
@@ -8,23 +8,24 @@ on:
 permissions: {}
 
 jobs:
-  verify:
+  inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
-      - name: Check candidate direct audio URLs
+      - name: Inspect RSS entries for the three target episodes
         shell: bash
         run: |
           set -euo pipefail
-          urls=(
-            "https://www.ivoox.com/informes-del-cni-dejan-al-descubierto-al-gobierno_mf_180328233_feed_1.mp3"
-            "https://www.ivoox.com/traicion-del-gobierno-al-pueblo-espanol_mf_180381816_feed_1.mp3"
-            "https://www.ivoox.com/junta-electoral-tumba-plan-sanchez_mf_180552857_feed_1.mp3"
-          )
-          n=0
-          for u in "${urls[@]}"; do
-            n=$((n+1))
-            echo "===== $n ====="
-            echo "$u"
-            curl -LsS -I --connect-timeout 10 --max-time 30 "$u" | grep -Ei 'HTTP/|content-type|content-length|content-disposition|location' | tail -30 || true
-          done
+          curl -LfsS 'https://feeds.ivoox.com/feed_fg_f1781509_filtro_1.xml' -o /tmp/feed.xml
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          root=ET.parse('/tmp/feed.xml').getroot()
+          for item in root.findall('.//item'):
+              text=' '.join((item.findtext('title') or '', item.findtext('guid') or '', item.findtext('link') or ''))
+              if any(x in text for x in ['180328233','180381816','180552857','Los informes del CNI','La traición del Gobierno','La Junta Electoral']):
+                  print('---ITEM---')
+                  for child in item:
+                      tag=child.tag.split('}')[-1]
+                      if tag in {'title','guid','link','enclosure','duration','content','encoded'}:
+                          print(tag, child.attrib, (child.text or '')[:1000])
+          PY
