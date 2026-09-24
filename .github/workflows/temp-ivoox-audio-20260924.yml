@@ -1,4 +1,4 @@
-name: Temporary inspect iVoox player internals
+name: Temporary map iVoox player API
 
 on:
   push:
@@ -12,35 +12,78 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Inspect HTML around player controls and JS assets
+      - name: Download app scripts and extract player API snippets
         shell: bash
         run: |
           set -euo pipefail
-          U='https://www.ivoox.com/en/traicion-del-gobierno-al-pueblo-espanol-audios-mp3_rf_180381816_1.html'
-          curl -LfsS --connect-timeout 10 --max-time 45 -A 'Mozilla/5.0' "$U" -o /tmp/page.html
-          echo "HTML_SIZE=$(stat -c %s /tmp/page.html)"
-          echo '=== play button contexts ==='
+          PAGE='https://www.ivoox.com/en/traicion-del-gobierno-al-pueblo-espanol-audios-mp3_rf_180381816_1.html'
+          curl -LfsS -A 'Mozilla/5.0' "$PAGE" -o /tmp/page.html
+          grep -Eo 'https://static-nweb\.ivoox\.com/[A-Za-z0-9._-]+\.js' /tmp/page.html | sort -u > /tmp/jsurls.txt
+          mkdir -p /tmp/js
+          n=0
+          while read -r U; do
+            n=$((n+1)); curl -LfsS --connect-timeout 8 --max-time 30 "$U" -o "/tmp/js/$n.js" || true
+          done < /tmp/jsurls.txt
+          echo "scripts=$(ls /tmp/js | wc -l)"
+
           python3 - <<'PY'
-          import re
-          s=open('/tmp/page.html',encoding='utf-8',errors='ignore').read()
-          pats=['play-1','180381816','data-audio','audioUrl','player','podcast-player','mediaUrl']
-          for p in pats:
-              print('\n###',p)
-              for m in list(re.finditer(re.escape(p),s,re.I))[:20]:
-                  a=max(0,m.start()-700); b=min(len(s),m.end()+1400)
-                  print(s[a:b].replace('\n',' ')[:2300])
-                  print('\n---')
+          import glob,re,os
+          terms=[
+            'getPlayerResumeTime','player:play','player/toggle','playAudio',
+            'playerAudio','audioPlayer','streaming','streamUrl','playUrl',
+            '/audios/','audioId','resume-time','resumeTime','getAudio',
+            'getPlayer','playerInfo','listen','playback','fileUrl','audioUrl',
+            'mediaUrl'
+          ]
+          for fn in glob.glob('/tmp/js/*.js'):
+            s=open(fn,encoding='utf-8',errors='ignore').read()
+            hits=[]
+            for term in terms:
+              for m in re.finditer(re.escape(term),s,re.I):
+                a=max(0,m.start()-700); b=min(len(s),m.end()+1600)
+                snippet=s[a:b].replace('\n',' ')
+                if snippet not in hits: hits.append(snippet)
+            if hits:
+              print('\n===== FILE',os.path.basename(fn),'=====')
+              for h in hits[:35]:
+                print(h[:2600])
+                print('\n---')
           PY
-          echo '=== script src ==='
-          grep -Eo '<script[^>]+src="[^"]+"' /tmp/page.html | sed -E 's/.*src="([^"]+)".*/\1/' | sort -u | tee /tmp/scripts.txt
-          echo '=== scan scripts for player/audio/API clues ==='
-          while read -r S; do
-            case "$S" in
-              http*) X="$S" ;;
-              //*) X="https:$S" ;;
-              /*) X="https://www.ivoox.com$S" ;;
-              *) X="https://www.ivoox.com/en/$S" ;;
-            esac
-            echo "### $X"
-            curl -LfsS --connect-timeout 8 --max-time 30 -A 'Mozilla/5.0' "$X" 2>/dev/null               | grep -Eio '.{0,160}(180381816|play-1|player|audio|enclosure|media|stream|episode|api/).{0,360}'               | head -120 || true
-          done < /tmp/scripts.txt
+
+      - name: Inspect Nuxt/Vue runtime state and click errors
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/browser && cd /tmp/browser
+          npm init -y >/dev/null 2>&1
+          npm install puppeteer-core@latest >/dev/null 2>&1
+          cat > inspect.js <<'NODE'
+          const puppeteer=require('puppeteer-core');
+          (async()=>{
+            const browser=await puppeteer.launch({executablePath:'/usr/bin/google-chrome',headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
+            const page=await browser.newPage();
+            page.on('console',m=>console.log('CONSOLE',m.type(),m.text()));
+            page.on('pageerror',e=>console.log('PAGEERROR',e.message));
+            page.on('request',r=>{if(/ivoox|audio|player|stream|mp3/i.test(r.url())) console.log('REQ',r.method(),r.resourceType(),r.url())});
+            page.on('response',r=>{if(/ivoox|audio|player|stream|mp3/i.test(r.url())) console.log('RES',r.status(),r.request().resourceType(),r.url())});
+            await page.goto('https://www.ivoox.com/en/traicion-del-gobierno-al-pueblo-espanol-audios-mp3_rf_180381816_1.html',{waitUntil:'networkidle2',timeout:90000});
+            console.log('RUNTIME',JSON.stringify(await page.evaluate(()=>{
+              const n=window.$nuxt;
+              const s=n?.$store?.state||{};
+              const shallow={};
+              for(const [k,v] of Object.entries(s)){
+                try{shallow[k]=typeof v==='object'&&v?Object.keys(v).slice(0,60):typeof v}catch{}
+              }
+              return {nuxt:!!n,plugins:Object.keys(n||{}).filter(k=>/player|audio|resource/i.test(k)),store:shallow,player:s.player};
+            })).slice(0,16000));
+            console.log('BUTTON',JSON.stringify(await page.$eval('button.play-1',e=>({outer:e.outerHTML,parent:e.parentElement?.outerHTML?.slice(0,3000)}))));
+            await page.click('button.play-1');
+            await new Promise(r=>setTimeout(r,15000));
+            console.log('AFTER',JSON.stringify(await page.evaluate(()=>({
+              player:window.$nuxt?.$store?.state?.player,
+              audios:[...document.querySelectorAll('audio')].map(a=>({src:a.src,currentSrc:a.currentSrc,duration:a.duration,paused:a.paused,error:a.error&&{code:a.error.code,message:a.error.message}}))
+            })).slice(0,12000));
+            await browser.close();
+          })().catch(e=>{console.error(e.stack||e);process.exit(1)});
+          NODE
+          node inspect.js
