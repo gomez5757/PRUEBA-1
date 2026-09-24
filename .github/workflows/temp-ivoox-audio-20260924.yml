@@ -1,4 +1,4 @@
-name: Temporary inspect Zeno episode source
+name: Temporary YouTube WebPo token download test
 
 on:
   push:
@@ -8,22 +8,119 @@ on:
 permissions: {}
 
 jobs:
-  inspect:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 15
     steps:
-      - name: Inspect Zeno podcast page and assets
+      - name: Install tools
         shell: bash
         run: |
           set -euo pipefail
-          URL='https://zeno.fm/podcast/en-libertad-aiierp/'
-          curl -LfsS --connect-timeout 10 --max-time 45 -A 'Mozilla/5.0' "$URL" -o /tmp/zeno.html
-          echo "SIZE=$(stat -c %s /tmp/zeno.html)"
-          echo '=== title context ==='
-          grep -Fio -C 2 'La traición del Gobierno al pueblo español' /tmp/zeno.html | head -40 || true
-          echo '=== likely audio/media urls ==='
-          grep -Eo 'https?://[^"'"'"' <>]+' /tmp/zeno.html             | grep -Ei '(mp3|audio|podcast|stream|cdn)' | head -200 || true
-          echo '=== Next/JSON markers ==='
-          grep -Eio '.{0,120}(audioUrl|mediaUrl|enclosure|episodeUrl|streamUrl|mp3|180381816).{0,300}' /tmp/zeno.html | head -160 || true
-          echo '=== scripts ==='
-          grep -Eo '<script[^>]+src="[^"]+"' /tmp/zeno.html             | sed -E 's/.*src="([^"]+)".*/\1/' | head -80 || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg xvfb
+          curl -fsSL https://deno.land/install.sh | sh
+          python -m pip install -U "yt-dlp[default]"
+          mkdir -p /tmp/pot && cd /tmp/pot
+          npm init -y >/dev/null 2>&1
+          npm install puppeteer-core@latest >/dev/null 2>&1
+          google-chrome --version
+          yt-dlp --version
+          "$HOME/.deno/bin/deno" --version | head -1
+
+      - name: Mint browser WebPo token bound to YouTube visitor data
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >/tmp/pot/mint.js <<'NODE'
+          const fs = require('fs');
+          const puppeteer = require('puppeteer-core');
+
+          (async () => {
+            const browser = await puppeteer.launch({
+              executablePath: '/usr/bin/google-chrome',
+              headless: false,
+              args: [
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--window-size=1280,720'
+              ]
+            });
+            const page = await browser.newPage();
+            await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36');
+            await page.goto('https://www.youtube.com?themeRefresh=1', {waitUntil:'domcontentloaded', timeout:60000});
+
+            const deadline = Date.now() + 30000;
+            let ready = false;
+            while (Date.now() < deadline) {
+              ready = await page.evaluate(() => {
+                try {
+                  const keys = new Set([...Object.keys(window.top), ...Object.getOwnPropertyNames(window.top)]);
+                  for (const key of keys) {
+                    try {
+                      const c = window.top[key];
+                      if (c && typeof c === 'object' && c.bevasrs && typeof c.bevasrs.wpc === 'function') return true;
+                    } catch {}
+                  }
+                } catch {}
+                return false;
+              });
+              if (ready) break;
+              await new Promise(r=>setTimeout(r,500));
+            }
+            if (!ready) throw new Error('WebPoClient not found');
+
+            const visitorData = await page.evaluate(() => {
+              try { return window.ytcfg?.get?.('VISITOR_DATA') || window.ytcfg?.data_?.VISITOR_DATA || ''; }
+              catch { return ''; }
+            });
+            if (!visitorData) throw new Error('VISITOR_DATA missing');
+
+            let token = null;
+            for (let attempt=0; attempt<10 && !token; attempt++) {
+              const res = await page.evaluate(async (binding) => {
+                try {
+                  const keys = new Set([...Object.keys(window.top), ...Object.getOwnPropertyNames(window.top)]);
+                  let factory = null;
+                  for (const key of keys) {
+                    try {
+                      const c = window.top[key];
+                      if (c && typeof c === 'object' && c.bevasrs && typeof c.bevasrs.wpc === 'function') {
+                        factory = c.bevasrs.wpc; break;
+                      }
+                    } catch {}
+                  }
+                  if (!factory) return {error:'factory missing'};
+                  const client = await factory();
+                  const t = await client.mws({c: binding, mc:false, me:false});
+                  return t == null ? {error:'null token'} : {token:String(t)};
+                } catch(e) {
+                  const s=String(e);
+                  if (s.includes('SDF:notready')) return {backoff:true};
+                  return {error:s};
+                }
+              }, visitorData);
+              if (res.token) token=res.token;
+              else if (res.backoff) await new Promise(r=>setTimeout(r,1000));
+              else throw new Error(res.error || 'token mint failed');
+            }
+            if (!token) throw new Error('token mint timed out');
+            fs.writeFileSync('/tmp/pot.json', JSON.stringify({visitorData, token}));
+            console.log(JSON.stringify({visitorDataLength:visitorData.length, tokenLength:token.length}));
+            await browser.close();
+          })().catch(e=>{console.error(e.stack||e); process.exit(1);});
+          NODE
+          cd /tmp/pot
+          xvfb-run -a node mint.js
+
+      - name: Use token to download full audio 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          VD="$(jq -r .visitorData /tmp/pot.json)"
+          TOK="$(jq -r .token /tmp/pot.json)"
+          mkdir -p /tmp/out
+          yt-dlp -v             --js-runtimes "deno:$HOME/.deno/bin/deno"             --extractor-args "youtube:po_token=web.gvs+$TOK;visitor_data=$VD"             --no-playlist -f 'bestaudio'             -o '/tmp/out/source.%(ext)s'             'https://www.youtube.com/watch?v=FIZoIwe-9Ow'
+          ls -lh /tmp/out
+          SRC="$(find /tmp/out -type f | head -1)"
+          ffprobe -v error -show_entries format=duration,size:stream=codec_name,bit_rate -of json "$SRC"
