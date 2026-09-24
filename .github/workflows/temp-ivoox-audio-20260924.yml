@@ -1,4 +1,4 @@
-name: Temporary discover iVoox API base URL
+name: Temporary test actual iVoox vcore audio API
 
 on:
   push:
@@ -8,43 +8,20 @@ on:
 permissions: {}
 
 jobs:
-  inspect:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 6
     steps:
-      - name: Extract API host/config from page and JS
+      - name: Query discovered vcore public endpoints
         shell: bash
         run: |
           set -euo pipefail
-          PAGE='https://www.ivoox.com/en/traicion-del-gobierno-al-pueblo-espanol-audios-mp3_rf_180381816_1.html'
-          curl -LfsS -A 'Mozilla/5.0' "$PAGE" -o /tmp/page.html
-          grep -Eo 'https://static-nweb\.ivoox\.com/[A-Za-z0-9._-]+\.js' /tmp/page.html | sort -u > /tmp/jsurls.txt
-          mkdir -p /tmp/js
-          n=0
-          while read -r U; do
-            n=$((n+1)); curl -LfsS --connect-timeout 8 --max-time 30 "$U" -o "/tmp/js/$n.js" || true
-          done < /tmp/jsurls.txt
-
-          python3 - <<'PY'
-          import glob,re
-          sources=[('/tmp/page.html',open('/tmp/page.html',encoding='utf-8',errors='ignore').read())]
-          sources += [(fn,open(fn,encoding='utf-8',errors='ignore').read()) for fn in glob.glob('/tmp/js/*.js')]
-          seen=set()
-          patterns=[
-            r'https?://[^"\'\\<> ]+',
-            r'baseURL.{0,500}',
-            r'baseUrl.{0,500}',
-            r'axios.{0,700}',
-            r'/public/audios.{0,300}',
-            r'apiHost.{0,500}',
-            r'apiUrl.{0,500}',
-            r'API_URL.{0,500}',
-          ]
-          for fn,s in sources:
-            for pat in patterns:
-              for m in re.finditer(pat,s,re.I):
-                txt=m.group(0)
-                if ('ivoox' in txt.lower() or 'public/audios' in txt.lower() or 'baseurl' in txt.lower() or 'axios' in txt.lower()) and txt not in seen:
-                  seen.add(txt)
-                  print('FILE',fn,'MATCH',txt[:1800])
-          PY
+          BASE='https://vcore-web.ivoox.com/v1'
+          ID='180381816'
+          for PTH in "/public/audios/$ID" "/public/audios/$ID/download-url"; do
+            U="$BASE$PTH"
+            echo "===== $U ====="
+            curl -LfsS --connect-timeout 8 --max-time 30               -H 'Accept: application/json, text/plain, */*'               -H 'Accept-Language: en'               -H 'Origin: https://www.ivoox.com'               -H 'Referer: https://www.ivoox.com/'               -A 'Mozilla/5.0' "$U" | tee /tmp/resp.json
+            echo
+            jq . /tmp/resp.json 2>/dev/null || true
+          done
