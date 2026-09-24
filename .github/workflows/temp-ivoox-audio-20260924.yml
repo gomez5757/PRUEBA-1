@@ -1,4 +1,4 @@
-name: Temporary inspect iVoox RSS
+name: Temporary rebuild three verified audios
 
 on:
   push:
@@ -8,24 +8,119 @@ on:
 permissions: {}
 
 jobs:
-  inspect:
+  audio:
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - idx: "01"
+            episode_id: "180328233"
+            video_id: "_IVxbL4JkE8"
+            expected_seconds: "5222"
+            output_name: "01_Los_informes_del_CNI.m4a"
+          - idx: "02"
+            episode_id: "180381816"
+            video_id: "FIZoIwe-9Ow"
+            expected_seconds: "5932"
+            output_name: "02_La_traicion_del_Gobierno.m4a"
+          - idx: "03"
+            episode_id: "180552857"
+            video_id: "81SmjsXtQeI"
+            expected_seconds: "4941"
+            output_name: "03_La_Junta_Electoral.m4a"
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
-      - name: Inspect RSS entries for the three target episodes
+      - name: Install audio tools
         shell: bash
+        run: |
+          sudo apt-get update -qq >/tmp/install.log 2>&1
+          sudo apt-get install -y -qq ffmpeg >>/tmp/install.log 2>&1
+          ffmpeg -version | head -1
+
+      - name: Resolve full-quality official podcast enclosure
+        shell: bash
+        env:
+          EPISODE_ID: ${{ matrix.episode_id }}
         run: |
           set -euo pipefail
           curl -LfsS 'https://feeds.ivoox.com/feed_fg_f1781509_filtro_1.xml' -o /tmp/feed.xml
           python3 - <<'PY'
-          import xml.etree.ElementTree as ET
+          import json, os, xml.etree.ElementTree as ET
+          eid=os.environ['EPISODE_ID']
           root=ET.parse('/tmp/feed.xml').getroot()
           for item in root.findall('.//item'):
-              text=' '.join((item.findtext('title') or '', item.findtext('guid') or '', item.findtext('link') or ''))
-              if any(x in text for x in ['180328233','180381816','180552857','Los informes del CNI','La traición del Gobierno','La Junta Electoral']):
-                  print('---ITEM---')
-                  for child in item:
-                      tag=child.tag.split('}')[-1]
-                      if tag in {'title','guid','link','enclosure','duration','content','encoded'}:
-                          print(tag, child.attrib, (child.text or '')[:1000])
+              guid=(item.findtext('guid') or '')
+              if guid.endswith('/'+eid):
+                  enc=item.find('enclosure')
+                  meta={
+                      'title':item.findtext('title'),
+                      'duration':next((c.text for c in item if c.tag.split('}')[-1]=='duration'),None),
+                      'url':enc.attrib['url'],
+                      'declared_length':int(enc.attrib.get('length','0')),
+                  }
+                  open('/tmp/meta.json','w').write(json.dumps(meta,ensure_ascii=False))
+                  print(json.dumps(meta,ensure_ascii=False))
+                  break
+          else:
+              raise SystemExit('episode not found in RSS')
           PY
+          python3 - <<'PY'
+          import json
+          m=json.load(open('/tmp/meta.json'))
+          assert m['url'].startswith('https://www.ivoox.com/')
+          assert m['declared_length'] > 70_000_000, m
+          PY
+
+      - name: Download, encode compact M4A, and validate full duration
+        shell: bash
+        env:
+          EXPECTED: ${{ matrix.expected_seconds }}
+          VIDEO_ID: ${{ matrix.video_id }}
+          OUTPUT_NAME: ${{ matrix.output_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          SRC_URL="$(jq -r '.url' /tmp/meta.json)"
+          TITLE="$(jq -r '.title' /tmp/meta.json)"
+          echo "Downloading full source: $TITLE"
+          curl -LfsS --retry 4 --retry-all-errors --retry-delay 3             --connect-timeout 15 --max-time 420             -A 'Mozilla/5.0' "$SRC_URL" -o /tmp/source.mp3
+          ls -lh /tmp/source.mp3
+          ffprobe -v error -show_entries format=duration,size:stream=codec_name,codec_type,bit_rate             -of json /tmp/source.mp3 | tee /tmp/source-probe.json
+
+          python3 - <<'PY'
+          import json, os
+          p=json.load(open('/tmp/source-probe.json'))
+          d=float(p['format']['duration']); exp=float(os.environ['EXPECTED'])
+          assert abs(d-exp) < 3.0, (d,exp)
+          assert int(p['format']['size']) > 70_000_000, p['format']
+          print('SOURCE_DURATION_OK',d)
+          PY
+
+          OUT="out/$OUTPUT_NAME"
+          ffmpeg -nostdin -hide_banner -loglevel error -xerror -y             -i /tmp/source.mp3 -map 0:a:0 -vn -map_metadata -1             -ac 1 -ar 48000 -c:a aac -b:a 64k -movflags +faststart             -metadata "title=$TITLE"             -metadata "comment=https://youtu.be/$VIDEO_ID"             "$OUT"
+
+          ffprobe -v error -show_entries format=duration,size:stream=codec_name,codec_type,channels,sample_rate,bit_rate             -of json "$OUT" | tee /tmp/output-probe.json
+          python3 - <<'PY'
+          import json, os
+          p=json.load(open('/tmp/output-probe.json'))
+          d=float(p['format']['duration']); exp=float(os.environ['EXPECTED'])
+          assert abs(d-exp) < 3.0, (d,exp)
+          assert len(p['streams'])==1
+          s=p['streams'][0]
+          assert s['codec_name']=='aac' and s['codec_type']=='audio' and int(s['channels'])==1
+          assert int(p['format']['size']) > 30_000_000
+          print('OUTPUT_DURATION_OK',d,'SIZE',p['format']['size'])
+          PY
+          ffmpeg -nostdin -v error -xerror -i "$OUT" -map 0:a:0 -f null -
+          ls -lh "$OUT"
+
+      - name: Upload verified audio
+        uses: actions/upload-artifact@v4
+        with:
+          name: audio-${{ matrix.idx }}-verified
+          path: out/*.m4a
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
