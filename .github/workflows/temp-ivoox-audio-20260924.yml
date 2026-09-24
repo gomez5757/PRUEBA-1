@@ -1,4 +1,4 @@
-name: Temporary YouTube WebPo token download test
+name: Temporary inspect iVoox web player
 
 on:
   push:
@@ -8,119 +8,57 @@ on:
 permissions: {}
 
 jobs:
-  test:
+  inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
-      - name: Install tools
+      - name: Set up Chromium automation
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg xvfb
-          curl -fsSL https://deno.land/install.sh | sh
-          python -m pip install -U "yt-dlp[default]"
-          mkdir -p /tmp/pot && cd /tmp/pot
+          sudo apt-get install -y -qq xvfb >/tmp/install.log 2>&1
+          mkdir -p /tmp/browser && cd /tmp/browser
           npm init -y >/dev/null 2>&1
           npm install puppeteer-core@latest >/dev/null 2>&1
           google-chrome --version
-          yt-dlp --version
-          "$HOME/.deno/bin/deno" --version | head -1
 
-      - name: Mint browser WebPo token bound to YouTube visitor data
+      - name: Capture iVoox player network
         shell: bash
         run: |
           set -euo pipefail
-          cat >/tmp/pot/mint.js <<'NODE'
-          const fs = require('fs');
+          cat >/tmp/browser/inspect.js <<'NODE'
           const puppeteer = require('puppeteer-core');
-
-          (async () => {
-            const browser = await puppeteer.launch({
-              executablePath: '/usr/bin/google-chrome',
-              headless: false,
-              args: [
-                '--no-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--window-size=1280,720'
-              ]
+          const target = 'https://www.ivoox.com/traicion-del-gobierno-al-pueblo-espanol-audios-mp3_rf_180381816_1.html';
+          const interesting = /mp3|audio|triton|cloudfront|play|stream|media|180381816|download/i;
+          (async()=>{
+            const browser=await puppeteer.launch({
+              executablePath:'/usr/bin/google-chrome', headless:false,
+              args:['--no-sandbox','--disable-dev-shm-usage','--window-size=1365,900']
             });
-            const page = await browser.newPage();
+            const page=await browser.newPage();
             await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36');
-            await page.goto('https://www.youtube.com?themeRefresh=1', {waitUntil:'domcontentloaded', timeout:60000});
-
-            const deadline = Date.now() + 30000;
-            let ready = false;
-            while (Date.now() < deadline) {
-              ready = await page.evaluate(() => {
-                try {
-                  const keys = new Set([...Object.keys(window.top), ...Object.getOwnPropertyNames(window.top)]);
-                  for (const key of keys) {
-                    try {
-                      const c = window.top[key];
-                      if (c && typeof c === 'object' && c.bevasrs && typeof c.bevasrs.wpc === 'function') return true;
-                    } catch {}
-                  }
-                } catch {}
-                return false;
-              });
-              if (ready) break;
-              await new Promise(r=>setTimeout(r,500));
-            }
-            if (!ready) throw new Error('WebPoClient not found');
-
-            const visitorData = await page.evaluate(() => {
-              try { return window.ytcfg?.get?.('VISITOR_DATA') || window.ytcfg?.data_?.VISITOR_DATA || ''; }
-              catch { return ''; }
+            page.on('request', req=>{ if(interesting.test(req.url())) console.log('REQ',req.resourceType(),req.method(),req.url()); });
+            page.on('response', res=>{ if(interesting.test(res.url())) console.log('RES',res.status(),res.request().resourceType(),res.url(),JSON.stringify(res.headers()).slice(0,700)); });
+            await page.goto(target,{waitUntil:'domcontentloaded',timeout:60000});
+            await new Promise(r=>setTimeout(r,7000));
+            console.log('TITLE',await page.title());
+            console.log('AUDIO_TAGS',await page.evaluate(()=>[...document.querySelectorAll('audio')].map(a=>({src:a.src,currentSrc:a.currentSrc,outer:a.outerHTML.slice(0,800)}))));
+            console.log('BUTTONS',await page.evaluate(()=>[...document.querySelectorAll('button,a')].map((e,i)=>({i,txt:(e.innerText||'').trim().slice(0,100),aria:e.getAttribute('aria-label'),title:e.getAttribute('title'),cls:e.className})).filter(x=>/play|reproduc|escuchar/i.test((x.txt||'')+' '+(x.aria||'')+' '+(x.title||''))).slice(0,30)));
+            // Try likely play controls by text/aria/title/classes.
+            const clicked = await page.evaluate(()=>{
+              const all=[...document.querySelectorAll('button,a,[role=button]')];
+              const el=all.find(e=>/play|reproducir|escuchar/i.test(((e.innerText||'')+' '+(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||'')+' '+(e.className||''))));
+              if(el){ el.click(); return {tag:el.tagName,txt:(el.innerText||'').trim(),aria:el.getAttribute('aria-label'),cls:String(el.className)}; }
+              return null;
             });
-            if (!visitorData) throw new Error('VISITOR_DATA missing');
-
-            let token = null;
-            for (let attempt=0; attempt<10 && !token; attempt++) {
-              const res = await page.evaluate(async (binding) => {
-                try {
-                  const keys = new Set([...Object.keys(window.top), ...Object.getOwnPropertyNames(window.top)]);
-                  let factory = null;
-                  for (const key of keys) {
-                    try {
-                      const c = window.top[key];
-                      if (c && typeof c === 'object' && c.bevasrs && typeof c.bevasrs.wpc === 'function') {
-                        factory = c.bevasrs.wpc; break;
-                      }
-                    } catch {}
-                  }
-                  if (!factory) return {error:'factory missing'};
-                  const client = await factory();
-                  const t = await client.mws({c: binding, mc:false, me:false});
-                  return t == null ? {error:'null token'} : {token:String(t)};
-                } catch(e) {
-                  const s=String(e);
-                  if (s.includes('SDF:notready')) return {backoff:true};
-                  return {error:s};
-                }
-              }, visitorData);
-              if (res.token) token=res.token;
-              else if (res.backoff) await new Promise(r=>setTimeout(r,1000));
-              else throw new Error(res.error || 'token mint failed');
-            }
-            if (!token) throw new Error('token mint timed out');
-            fs.writeFileSync('/tmp/pot.json', JSON.stringify({visitorData, token}));
-            console.log(JSON.stringify({visitorDataLength:visitorData.length, tokenLength:token.length}));
+            console.log('CLICKED',clicked);
+            await new Promise(r=>setTimeout(r,12000));
+            console.log('AUDIO_AFTER',await page.evaluate(()=>[...document.querySelectorAll('audio')].map(a=>({src:a.src,currentSrc:a.currentSrc,duration:a.duration,currentTime:a.currentTime,paused:a.paused}))));
+            const entries=await page.evaluate(()=>performance.getEntriesByType('resource').map(e=>e.name).filter(u=>/mp3|audio|triton|cloudfront|stream|180381816/i.test(u)));
+            console.log('PERF',entries.slice(-100));
             await browser.close();
-          })().catch(e=>{console.error(e.stack||e); process.exit(1);});
+          })().catch(e=>{console.error(e.stack||e);process.exit(1)});
           NODE
-          cd /tmp/pot
-          xvfb-run -a node mint.js
-
-      - name: Use token to download full audio 2
-        shell: bash
-        run: |
-          set -euo pipefail
-          VD="$(jq -r .visitorData /tmp/pot.json)"
-          TOK="$(jq -r .token /tmp/pot.json)"
-          mkdir -p /tmp/out
-          yt-dlp -v             --js-runtimes "deno:$HOME/.deno/bin/deno"             --extractor-args "youtube:po_token=web.gvs+$TOK;visitor_data=$VD"             --no-playlist -f 'bestaudio'             -o '/tmp/out/source.%(ext)s'             'https://www.youtube.com/watch?v=FIZoIwe-9Ow'
-          ls -lh /tmp/out
-          SRC="$(find /tmp/out -type f | head -1)"
-          ffprobe -v error -show_entries format=duration,size:stream=codec_name,bit_rate -of json "$SRC"
+          cd /tmp/browser
+          xvfb-run -a node inspect.js
