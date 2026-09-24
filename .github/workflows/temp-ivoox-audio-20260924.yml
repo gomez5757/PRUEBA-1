@@ -1,4 +1,4 @@
-name: Temporary test iVoox podcast user agents
+name: Temporary inspect Zeno episode source
 
 on:
   push:
@@ -8,23 +8,22 @@ on:
 permissions: {}
 
 jobs:
-  test:
+  inspect:
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
-      - name: Test user agents against RSS enclosure
+      - name: Inspect Zeno podcast page and assets
         shell: bash
         run: |
           set -euo pipefail
-          U='https://www.ivoox.com/traicion-del-gobierno-al-pueblo-espanol_mf_180381816_feed_1.mp3?d=1789067318'
-          uas=(
-            'Mozilla/5.0'
-            'iVoox/2.15(134) (Linux; Android 7.2; Scale/1.0)'
-            'AntennaPod/3.5.0'
-            'Podcasts/3.6 CFNetwork/1498.700.2 Darwin/23.6.0'
-            'AppleCoreMedia/1.0.0.21G93 (iPhone; U; CPU OS 17_6 like Mac OS X; en_us)'
-          )
-          for ua in "${uas[@]}"; do
-            echo "===== UA: $ua ====="
-            curl -LsS -I --connect-timeout 10 --max-time 30 -A "$ua" "$U"               | grep -Ei 'HTTP/|content-type|content-length|content-disposition|location' | tail -30 || true
-          done
+          URL='https://zeno.fm/podcast/en-libertad-aiierp/'
+          curl -LfsS --connect-timeout 10 --max-time 45 -A 'Mozilla/5.0' "$URL" -o /tmp/zeno.html
+          echo "SIZE=$(stat -c %s /tmp/zeno.html)"
+          echo '=== title context ==='
+          grep -Fio -C 2 'La traición del Gobierno al pueblo español' /tmp/zeno.html | head -40 || true
+          echo '=== likely audio/media urls ==='
+          grep -Eo 'https?://[^"'"'"' <>]+' /tmp/zeno.html             | grep -Ei '(mp3|audio|podcast|stream|cdn)' | head -200 || true
+          echo '=== Next/JSON markers ==='
+          grep -Eio '.{0,120}(audioUrl|mediaUrl|enclosure|episodeUrl|streamUrl|mp3|180381816).{0,300}' /tmp/zeno.html | head -160 || true
+          echo '=== scripts ==='
+          grep -Eo '<script[^>]+src="[^"]+"' /tmp/zeno.html             | sed -E 's/.*src="([^"]+)".*/\1/' | head -80 || true
