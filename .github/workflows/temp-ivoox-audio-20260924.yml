@@ -1,4 +1,4 @@
-name: Temporary inspect live iVoox player
+name: Temporary inspect iVoox player implementation
 
 on:
   push:
@@ -10,89 +10,30 @@ permissions: {}
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 6
     steps:
-      - name: Inspect hydrated player and network
+      - name: Extract player class source from public JS
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /tmp/browser
-          cd /tmp/browser
-          npm init -y >/dev/null 2>&1
-          npm install puppeteer-core@latest >/dev/null 2>&1
-          cat >inspect.js <<'NODE'
-          const puppeteer = require('puppeteer-core');
-
-          (async () => {
-            const browser = await puppeteer.launch({
-              executablePath: '/usr/bin/google-chrome',
-              headless: true,
-              args: ['--no-sandbox','--disable-dev-shm-usage','--autoplay-policy=no-user-gesture-required']
-            });
-            const page = await browser.newPage();
-            await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36');
-
-            const interesting = /ivoox|listen_|\.mp3|audio|stream|triton|media/i;
-            page.on('request', req => {
-              if (interesting.test(req.url())) console.log('REQ', req.method(), req.resourceType(), req.url());
-            });
-            page.on('response', res => {
-              if (interesting.test(res.url())) {
-                const h = res.headers();
-                console.log('RES', res.status(), res.request().resourceType(), res.url(),
-                  'TYPE='+(h['content-type']||''), 'LEN='+(h['content-length']||''), 'LOC='+(h['location']||''));
-              }
-            });
-            page.on('console', m => console.log('BROWSER', m.type(), m.text()));
-            page.on('pageerror', e => console.log('PAGEERROR', e.message));
-
-            const target = 'https://www.ivoox.com/en/traicion-del-gobierno-al-pueblo-espanol-audios-mp3_rf_180381816_1.html';
-            await page.goto(target, {waitUntil:'networkidle2', timeout:90000});
-            await new Promise(r => setTimeout(r, 5000));
-
-            const state = await page.evaluate(() => {
-              const n = window.$nuxt;
-              const item = n && n.$componentRouter && n.$componentRouter.state && n.$componentRouter.state.item;
-              return {
-                nuxt: !!n,
-                nuxtKeys: n ? Object.keys(n).filter(k=>/player|audio|resource|component/i.test(k)) : [],
-                hasPlayer: !!(n && n.$player),
-                playerKeys: n && n.$player ? Object.getOwnPropertyNames(Object.getPrototypeOf(n.$player)).concat(Object.keys(n.$player)) : [],
-                item: item ? {id:item.id,title:item.title,duration:item.duration,mediaUrl:item.mediaUrl,downloadUrl:item.downloadUrl} : null,
-                storePlayer: n && n.$store ? n.$store.state.player : null,
-                audioTags: Array.from(document.querySelectorAll('audio')).map(a=>({src:a.src,currentSrc:a.currentSrc,duration:a.duration,paused:a.paused}))
-              };
-            });
-            console.log('STATE', JSON.stringify(state));
-
-            const invoked = await page.evaluate(() => {
-              const n = window.$nuxt;
-              const item = n && n.$componentRouter && n.$componentRouter.state && n.$componentRouter.state.item;
-              if (n && n.$player && item) {
-                try { n.$player.play(item); return 'player.play'; } catch(e) { return 'ERR '+String(e); }
-              }
-              const btn = document.querySelector('button.play-1');
-              if (btn) { btn.click(); return 'button.click'; }
-              return 'none';
-            });
-            console.log('INVOKED', invoked);
-
-            await new Promise(r => setTimeout(r, 20000));
-
-            const after = await page.evaluate(() => {
-              const n = window.$nuxt;
-              return {
-                storePlayer: n && n.$store ? n.$store.state.player : null,
-                audioTags: Array.from(document.querySelectorAll('audio')).map(a=>({
-                  src:a.src,currentSrc:a.currentSrc,duration:a.duration,currentTime:a.currentTime,paused:a.paused,
-                  readyState:a.readyState, networkState:a.networkState,
-                  error:a.error ? {code:a.error.code,message:a.error.message} : null
-                })),
-                resources: performance.getEntriesByType('resource').map(e=>e.name).filter(u=>/listen_|\.mp3|audio|triton|media/i.test(u)).slice(-100)
-              };
-            });
-            console.log('AFTER', JSON.stringify(after));
-            await browser.close();
-          })().catch(e => { console.error(e.stack || e); process.exit(1); });
-          NODE
-          node inspect.js
+          PAGE='https://www.ivoox.com/en/traicion-del-gobierno-al-pueblo-espanol-audios-mp3_rf_180381816_1.html'
+          curl -LfsS -A 'Mozilla/5.0' "$PAGE" -o /tmp/page.html
+          grep -Eo 'https://static-nweb\.ivoox\.com/[A-Za-z0-9._-]+\.js' /tmp/page.html | sort -u > /tmp/jsurls.txt
+          mkdir -p /tmp/js
+          n=0
+          while read -r U; do
+            n=$((n+1))
+            curl -LfsS --connect-timeout 8 --max-time 30 "$U" -o "/tmp/js/$n.js" || true
+          done < /tmp/jsurls.txt
+          python3 - <<'PY'
+          import glob,re,os
+          for fn in glob.glob('/tmp/js/*.js'):
+              s=open(fn,encoding='utf-8',errors='ignore').read()
+              for needle in ['key:"play"','key:"toggle"','key:"setAudio"']:
+                  pos=s.find(needle)
+                  if pos>=0:
+                      a=max(0,pos-1800); b=min(len(s),pos+5000)
+                      print('===== FILE',os.path.basename(fn),'NEEDLE',needle,'=====')
+                      print(s[a:b])
+                      print('\n---END---')
+          PY
